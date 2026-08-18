@@ -46,13 +46,14 @@ The librarian collapses those seven steps into: describe the change in chat, app
 - [x] V: Mechanics verified against Anthropic documentation
 - [x] R: Testbed repository, two plugins, four skills, one deliberate duplicate name
 - [x] S: Build contract written and generalized
-- [ ] B1: Modules built to contract
-- [ ] B2: Integrated, suite green
-- [ ] B3: Multi-plugin discovery and ambiguity handling proven
-- [ ] B4: Codex review round ends approved
-- [ ] B5: Proven end to end against the live testbed repository: propose, publish, confirm, revert
+- [x] B1: Modules built to contract
+- [x] B2: Integrated, suite green - 749 tests
+- [x] B3: Multi-plugin discovery and ambiguity handling proven, live
+- [ ] B4: Codex review round ends approved - running
+- [x] B5: Proven end to end against the live testbed repository: list, ambiguity refusal, propose,
+      bad-fingerprint refusal, anonymous-publish refusal, publish, history, revert
 - [ ] B6: Deployment path and setup instructions for a new team
-- [ ] B7: Committed and pushed
+- [x] B7: Committed and pushed - github.com/adampaulwalker/skill-librarian (private)
 
 ## Completion criteria
 
@@ -78,4 +79,32 @@ The librarian collapses those seven steps into: describe the change in chat, app
 | Round | Found | Fixed | Verdict |
 |---|---|---|---|
 | 0 | mechanics verified, no blocker | - | route holds, one human check outstanding |
-| 1 | built single-tenant by mistake; spec hardcoded one plugin directory | spec generalized, discovery module added, testbed rebuilt with two plugins | in progress |
+| 1 | built single-tenant by mistake; spec hardcoded one plugin directory | spec generalized, discovery module added, testbed rebuilt with two plugins | done |
+| 2 | integrator found publisher trusted a raw plugin_dir the edit path validated, so the last gate before a write trusted repository content the first gate refuses | validate_plugin_dir now runs at the write gate, regression test added | done |
+| 3 | live run exposed two defects the fakes missed: a garbled delivery sentence ("around usually within about 30 minutes"), and a 404 for an absent optional folder logged as a failure | wording composed in one place, 404 moved to debug, regression assertion added | done |
+
+## Proven live, 2026-08-18
+
+Against `adampaulwalker/skill-librarian-testbed`, a real private repository holding two plugins:
+
+| Step | Result |
+|---|---|
+| List skills across both plugins | 4 skills in 2 collections, duplicate name flagged |
+| Read a skill whose name exists twice | Refused, naming both collections |
+| Propose an edit | Plain-English summary, fingerprint issued |
+| Approve with a wrong fingerprint | Refused |
+| Approve with no identity | Refused |
+| Approve properly | Pull request opened and merged, version 1.0.0 to 1.0.1 |
+| Commit author / committer | `Ellie Mitchell <ellie@example.com>` / `Skill Librarian` |
+| Sibling plugin manifest | Untouched at 1.0.0 |
+| History | Two changes, each naming who asked |
+| Revert | Published forward as 1.0.2, never a rewrite |
+
+## Still open
+
+- Deployment: the GitHub App needs registering, and the service needs hosting.
+- One human check nobody can do without an organization owner's screen: whether the GitHub source
+  option appears under Organization settings, Plugins, Add plugin. Anthropic called it private beta in
+  February and documents it as normal in August.
+- Known weaknesses under Codex review: duplicate path-validation logic in two modules, dead code in
+  `diffing.py`, and three different fake GitHub clients in the suite.

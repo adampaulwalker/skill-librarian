@@ -188,3 +188,9 @@ export LIBRARIAN_REPO_OWNER=adampaulwalker LIBRARIAN_R
 sed -n '697,720p' src/librarian/service.py
 [15:54:34] Bash: cd ~/code/skill-librarian
 export LIBRARIAN_REPO_OWNER=adampaulwalker LIBRARIAN_R
+[15:54:51] Bash: cd ~/code/skill-librarian
+git add -A
+git -c user.name="Adam Walker" -c user.emai
+[15:57:12] mcp__multi-llm__codex: {"prompt":"Review the implementation of the skill librarian we designed earlier.
+[15:57:25] Bash: cd ~/code/skill-librarian
+gh repo create skill-librarian --private --source=. --
