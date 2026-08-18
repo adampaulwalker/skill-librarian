@@ -1,0 +1,190 @@
+[14:28:09] Bash: set -e
+S=~/code/skill-librarian
+cat > "$S/pyproject.toml" <<'EOF'
+[project]
+name
+[14:29:10] Workflow
+[14:29:14] Read: SPEC.md
+[14:29:14] Bash: ls -la /Users/adam/code/skill-librarian/ && cat /Users/adam/code/skill-librarian
+[14:29:15] Bash: ls -la && cat SPEC.md
+[14:29:15] Read: SPEC.md
+[14:29:15] Read: SPEC.md
+[14:29:16] Read: SPEC.md
+[14:29:16] Bash: ls -la /Users/adam/code/skill-librarian && find /Users/adam/code/skill-librarian
+[14:29:16] Bash: ls -la /Users/adam/code/skill-librarian/ && find /Users/adam/code/skill-libraria
+[14:29:16] Skill: personal-voice
+[14:29:16] Read: SPEC.md
+[14:29:16] Bash: ls -la /Users/adam/code/skill-librarian/ && find /Users/adam/code/skill-libraria
+[14:29:16] Bash: ls -la /Users/adam/code/skill-librarian; find /Users/adam/code/skill-librarian -
+[14:29:18] Bash: find /Users/adam/code/skill-librarian/src /Users/adam/code/skill-librarian/tests
+[14:29:19] Bash: cat pyproject.toml && echo "---SRC---" && ls -la src/librarian/ && echo "---TEST
+[14:29:19] Bash: cat /Users/adam/code/skill-librarian/pyproject.toml; echo "---"; cat /Users/adam
+[14:29:19] Bash: cat /Users/adam/code/skill-librarian/pyproject.toml; echo ---; ls -la /Users/ada
+[14:29:20] Bash: cat /Users/adam/code/skill-librarian/pyproject.toml; echo ---; cat /Users/adam/c
+[14:29:21] Bash: ls -la && find . -type f -not -path './.git/*' | head -50 && echo "---PYPROJECT-
+[14:29:24] ToolSearch: select:mcp__multi-llm__codex
+[14:29:25] ToolSearch: select:mcp__multi-llm__codex
+[14:29:27] Bash: cat /Users/adam/code/skill-librarian/.claude/LIVE-PROGRESS.md 2>/dev/null | head
+[14:30:38] Bash: D="/Users/adam/Library/CloudStorage/Dropbox/Atlantic Labs/clients/People Project
+[14:30:46] Bash: D="/Users/adam/Library/CloudStorage/Dropbox/Atlantic Labs/clients/People Project
+[14:31:56] Bash: cat > /Users/adam/code/skill-librarian/src/librarian/skillfile.py <<'PY'
+"""Read
+[14:32:04] Bash: python3 -c "
+import yaml
+s='a\n---\nb'
+d=yaml.safe_dump({'description':s}, sort_
+[14:32:10] Bash: python3 - <<'PY'
+p='src/librarian/skillfile.py'
+s=open(p,encoding='utf-8').read(
+[14:32:12] Bash: grep -n 'lstrip' src/librarian/skillfile.py | cat -v
+[14:32:30] Bash: mkdir -p /Users/adam/code/skill-librarian/src/librarian && cat > /Users/adam/cod
+[14:32:35] Bash: ls /Users/adam/code/skill-librarian/src/librarian/; echo "---"; cat /Users/adam/
+[14:32:41] Bash: S=~/code/skill-librarian
+echo "=== files built so far ==="; find "$S/src" "$S/te
+[14:32:46] Bash: S=~/code/skill-librarian
+grep -rniE "people.project|peopleproject|jodi|ellie|rec
+[14:33:07] Bash: cat > /Users/adam/code/skill-librarian/tests/test_skillfile.py <<'PY'
+"""Tests f
+[14:33:09] Bash: S=~/code/skill-librarian
+python3 - <<'PY'
+import re
+p="/Users/adam/code/skill-li
+[14:33:16] Bash: cat > /Users/adam/code/skill-librarian/tests/fakes.py <<'PYEOF'
+"""An in-memory 
+[14:33:24] Bash: python3 - <<'PY'
+import pathlib
+p = pathlib.Path("tests/test_skillfile.py")
+s = 
+[14:33:26] Bash: mkdir -p /Users/adam/code/skill-librarian/src/librarian && cat > /Users/adam/cod
+[14:33:31] Bash: set -e
+T=/tmp/sf-check-$$
+mkdir -p $T/src/librarian $T/tests
+cp /Users/adam/code
+[14:33:34] Bash: python3 - <<'PY'
+p="/Users/adam/code/skill-librarian/SPEC.md"
+s=open(p).read()
+
+
+[14:33:39] Bash: python3 - <<'PYEOF'
+import re, pathlib
+p = pathlib.Path("src/librarian/publisher
+[14:33:43] Bash: T=/tmp/sf-check-849
+cat > $T/src/librarian/errors.py <<'PY'
+class LibrarianError
+[14:33:46] Bash: head -8 /Users/adam/.claude/skills/linkedin-post/SKILL.md | cat -A | head -8 | c
+[14:33:50] Bash: python3 - <<'PY'
+import yaml
+t=open("/Users/adam/.claude/skills/linkedin-post/SK
+[14:33:56] Bash: grep -n -- '—\|–\|--' src/librarian/skillfile.py tests/test_skillfile.py; echo "
+[14:33:57] mcp__multi-llm__codex: {"prompt":"Working in /Users/adam/code/skill-librarian. Read SPEC.md in full fir
+[14:33:57] mcp__multi-llm__codex: {"prompt":"I am building foundation modules for a Python 3.12+ project at /Users
+[14:33:59] Bash: cat > /Users/adam/code/skill-librarian/src/librarian/service.py <<'PYEOF'
+"""Too
+[14:34:03] Bash: python3 - <<'PY'
+import pathlib, re
+p = pathlib.Path("tests/test_skillfile.py")
+
+[14:34:05] ToolSearch: select:mcp__multi-llm__codex
+[14:35:01] Bash: cat > /Users/adam/code/skill-librarian/src/librarian/server.py <<'PYEOF'
+"""The 
+[14:35:10] Bash: cat > /Users/adam/code/skill-librarian/tests/test_github.py <<'PYEOF'
+"""Tests f
+[14:35:14] Bash: mkdir -p /Users/adam/code/skill-librarian/src/librarian /Users/adam/code/skill-l
+[14:35:23] Bash: set -e
+rm -rf /tmp/sl-sandbox && mkdir -p /tmp/sl-sandbox
+cp -R /Users/adam/code
+[14:35:26] Bash: sed -n 1,80p src/librarian/errors.py
+[14:35:40] Bash: python3 - <<'PYEOF'
+import re
+p = "src/librarian/service.py"
+s = open(p).read()
+
+[14:35:41] Bash: cat > /Users/adam/code/skill-librarian/src/librarian/config.py <<'PY'
+"""Server 
+[14:35:44] Bash: cat > /Users/adam/code/skill-librarian/src/librarian/diffing.py <<'PYEOF'
+"""Tur
+[14:35:45] Bash: python3 - <<'PYEOF'
+import pathlib
+t = pathlib.Path("tests/test_publisher.py")
+s
+[14:35:52] Bash: python3 - <<'PYEOF'
+import pathlib
+p = pathlib.Path("src/librarian/diffing.py")
+
+[14:35:54] Bash: cd /tmp/sl-sandbox && (python3.12 -m venv .venv 2>/dev/null || python3 -m venv .
+[14:36:03] Bash: python3 - <<'PYEOF'
+import re, pathlib
+p = pathlib.Path("src/librarian/github.py
+[14:36:03] Bash: rm -rf /tmp/librarian-verify && mkdir -p /tmp/librarian-verify/librarian /tmp/li
+[14:36:13] Bash: python3 - <<'PYEOF'
+import pathlib
+p = pathlib.Path("tests/test_publisher.py")
+s
+[14:36:21] Bash: grep -n -- "--" src/librarian/publisher.py tests/test_publisher.py | grep -v "^t
+[14:36:21] Bash: python3 - <<'PYEOF'
+import pathlib
+p = pathlib.Path("src/librarian/github.py")
+s
+[14:36:21] ToolSearch: select:mcp__multi-llm__codex
+[14:36:29] Bash: set -e
+cd /Users/adam/code/skill-librarian
+cp src/librarian/github.py /tmp/sl-sa
+[14:36:42] Bash: cat > /Users/adam/code/skill-librarian/src/librarian/proposals.py <<'PYEOF'
+"""D
+[14:36:43] Bash: python3 -m pytest tests/test_publisher.py -q 2>&1 | tail -30
+[14:36:43] Bash: grep -n "^class\|^def \|def __init__" tests/fakes.py | head -30 && echo "=== err
+[14:36:44] Bash: cat > /Users/adam/code/skill-librarian/src/librarian/paths.py <<'PY'
+"""The writ
+[15:50:39] Bash: cd ~/code/skill-librarian && uv run pytest -q 2>&1 | tail -5
+echo "=== generalit
+[15:50:48] Bash: cd ~/code/skill-librarian
+echo "=== service public API ==="
+grep -nE "^def |^cla
+[15:50:51] Bash: cd ~/code/skill-librarian
+sed -n '438,470p' src/librarian/service.py
+echo "..."
+
+[15:51:01] Bash: cd ~/code/skill-librarian
+export LIBRARIAN_REPO_OWNER=adampaulwalker
+export LIBR
+[15:51:04] Bash: cd ~/code/skill-librarian
+grep -n "class TokenClient" -A 25 src/librarian/github
+[15:51:16] Bash: cd ~/code/skill-librarian
+export LIBRARIAN_REPO_OWNER=adampaulwalker
+export LIBR
+[15:51:32] Bash: cd ~/code/skill-librarian
+export LIBRARIAN_REPO_OWNER=adampaulwalker
+export LIBR
+[15:51:40] Bash: cd ~/code/skill-librarian
+echo "=== what path form do tests pass to propose_edit
+[15:52:03] Bash: cd ~/code/skill-librarian
+export LIBRARIAN_REPO_OWNER=adampaulwalker
+export LIBR
+[15:52:18] Bash: R=adampaulwalker/skill-librarian-testbed
+echo "=== PULL REQUESTS ==="
+gh pr list
+[15:52:30] Bash: cd ~/code/skill-librarian
+echo "=== _sync_wording ==="; sed -n '321,331p' src/li
+[15:52:34] Bash: cd ~/code/skill-librarian
+echo "=== publisher estimated_live_by ==="; grep -n "e
+[15:52:37] Bash: cd ~/code/skill-librarian; sed -n '216,232p' src/librarian/publisher.py
+[15:52:47] Bash: cd ~/code/skill-librarian
+grep -rn "GitHub request failed" src/librarian/*.py | 
+[15:52:52] Bash: cd ~/code/skill-librarian; sed -n '305,330p' src/librarian/github.py
+[15:53:14] Bash: cd ~/code/skill-librarian
+python3 - <<'PY'
+import re
+# Fix 1: estimated_live_by 
+[15:53:21] Bash: cd ~/code/skill-librarian && uv run pytest -q 2>&1 | tail -12
+[15:53:28] Bash: cd ~/code/skill-librarian
+grep -n "test_estimated_live_by_is_a_window_and_not_a_
+[15:53:33] Bash: cd ~/code/skill-librarian; sed -n '605,625p' tests/test_service.py
+[15:53:53] Bash: cd ~/code/skill-librarian
+python3 - <<'PY'
+p="tests/test_publisher.py"; s=open(p
+[15:54:10] Bash: cd ~/code/skill-librarian
+export LIBRARIAN_REPO_OWNER=adampaulwalker LIBRARIAN_R
+[15:54:14] Bash: cd ~/code/skill-librarian
+sed -n '697,720p' src/librarian/service.py
+[15:54:34] Bash: cd ~/code/skill-librarian
+export LIBRARIAN_REPO_OWNER=adampaulwalker LIBRARIAN_R
