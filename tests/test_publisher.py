@@ -56,6 +56,11 @@ class LocalFakeGitHub:
         self.commits: list[dict[str, Any]] = []
         self.pull_requests: list[dict[str, Any]] = []
         self.merged: list[int] = []
+        self.merge_calls: list[dict[str, Any]] = []
+        self.deleted_branches: list[str] = []
+        # What each working copy has actually changed, so a merge carries those files across
+        # instead of stamping a whole snapshot over whatever else arrived in the meantime.
+        self.branch_changes: dict[str, dict[str, str]] = {}
         self.calls: list[tuple[str, Any]] = []
         self.fail_on: set[str] = set()
         self._counter = 0
@@ -160,6 +165,7 @@ class LocalFakeGitHub:
         sha = self._next_sha("commit")
         self.trees[sha] = tree
         self._move(branch, sha)
+        self.branch_changes.setdefault(branch, {}).update(files)
         self.commits.append(
             {
                 "sha": sha,
@@ -183,18 +189,45 @@ class LocalFakeGitHub:
         )
         return number
 
-    def merge_pr(self, number: int, commit_title: str) -> str:
+    def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str:
+        """Merge, but only the exact saved change the publisher says it is publishing.
+
+        The name of the change is not optional. A merge that does not say which saved change it
+        is publishing would happily publish whatever the working copy happened to hold by then,
+        so this refuses rather than guessing.
+        """
         self.calls.append(("merge_pr", number))
+        self.merge_calls.append(
+            {
+                "number": number,
+                "commit_title": commit_title,
+                "expected_head_sha": expected_head_sha,
+            }
+        )
         self._maybe_fail("merge_pr")
         pull_request = self.pull_requests[number - 1]
+        head = pull_request["head"]
+        if not expected_head_sha:
+            raise ValueError("a merge has to name the saved change it is publishing")
+        if self.branches[head] != expected_head_sha:
+            raise ValueError("the working copy moved after the change was agreed to")
         base = pull_request["base"]
         tree = dict(self.trees[self.branches[base]])
-        tree.update(self.trees[self.branches[pull_request["head"]]])
+        tree.update(self.branch_changes.get(head, {}))
         sha = self._next_sha("merge")
         self.trees[sha] = tree
         self._move(base, sha)
         self.merged.append(number)
         return sha
+
+    def delete_branch(self, name: str) -> None:
+        self.calls.append(("delete_branch", name))
+        self._maybe_fail("delete_branch")
+        if name == self.default_branch:
+            raise ValueError("the shared copy is never removed")
+        self.branches.pop(name, None)
+        self.branch_changes.pop(name, None)
+        self.deleted_branches.append(name)
 
     def list_commits(self, path: str, limit: int) -> list[dict[str, Any]]:
         self.calls.append(("list_commits", (path, limit)))
@@ -657,3 +690,354 @@ def test_the_result_points_at_the_commit_and_the_pull_request(cfg: Config, clien
 
     assert result.commit_sha == client.commits[0]["sha"]
     assert result.pr_number == client.pull_requests[0]["number"]
+
+
+# ==============================================================================================
+# Two people asking for a change at the same time
+# ==============================================================================================
+
+
+def version_parts(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+class RacingFakeGitHub(LocalFakeGitHub):
+    """A fake where somebody else's change lands while this one is being prepared.
+
+    The other change arrives the moment this publish saves its own work, which is exactly when a
+    real race arrives: both people started from the same copy, and one of them gets there first.
+    """
+
+    def __init__(self, files: dict[str, str], other_publish_files: dict[str, str]) -> None:
+        super().__init__(files)
+        self._other_publish_files = other_publish_files
+        self.other_publish_landed = False
+
+    def commit_files(
+        self,
+        branch: str,
+        files: dict[str, str],
+        message: str,
+        author_name: str,
+        author_email: str,
+    ) -> str:
+        sha = super().commit_files(branch, files, message, author_name, author_email)
+        if not self.other_publish_landed:
+            self.other_publish_landed = True
+            self.simulate_someone_else_publishing(self._other_publish_files)
+        return sha
+
+
+def test_a_second_publish_cannot_ship_content_without_the_version_moving(cfg: Config) -> None:
+    """Two changes, one version number, and no quiet loser.
+
+    Both people read version 1.4.2 and both work out 1.4.3. The first one merges, so the shared
+    copy is already 1.4.3 by the time the second one merges. If the second one merged anyway, its
+    words would sit in the repository under a version number that already went out, so Claude
+    would keep serving the copy people already have and nobody would be told a thing. That is the
+    exact silence this whole project exists to prevent, so the second publish either moves the
+    version number on again or it refuses out loud.
+    """
+    someone_elses_version = "1.4.3"
+    client = RacingFakeGitHub(
+        starting_files(),
+        other_publish_files={
+            PLUGIN_MANIFEST: plugin_manifest(someone_elses_version),
+            MARKETPLACE_MANIFEST: marketplace_manifest(someone_elses_version),
+        },
+    )
+
+    refusal: PublishFailed | None = None
+    result = None
+    try:
+        result = publish(client, cfg, make_proposal())
+    except PublishFailed as raised:
+        refusal = raised
+
+    assert client.other_publish_landed, "the race never happened, so this test proves nothing"
+
+    landed_version = client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST)
+    landed_skill = client.tree_of(DEFAULT_BRANCH)[SKILL_FILE]
+
+    if refusal is not None:
+        # Refusing is allowed. Being quiet about it is not.
+        assert refusal.user_message.strip()
+        assert result is None
+    else:
+        # Publishing is allowed, but only on a version number that really did move past the one
+        # the other change already delivered.
+        assert result is not None
+        assert landed_skill == UPDATED_SKILL
+        assert version_parts(landed_version) > version_parts(someone_elses_version)
+        assert result.new_version == landed_version
+        assert client.marketplace_version_on(DEFAULT_BRANCH) == landed_version
+
+    # Either way, the outcome this test exists to forbid is content sitting in the shared copy
+    # under a version number that never moved past the other change.
+    assert not (
+        landed_skill == UPDATED_SKILL
+        and version_parts(landed_version) <= version_parts(someone_elses_version)
+    )
+
+
+def test_the_version_is_worked_out_again_from_the_copy_that_is_there_at_merge_time(
+    cfg: Config,
+) -> None:
+    """The recomputed number is the one that gets written into both files and named everywhere."""
+    client = RacingFakeGitHub(
+        starting_files(),
+        other_publish_files={
+            PLUGIN_MANIFEST: plugin_manifest("1.4.3"),
+            MARKETPLACE_MANIFEST: marketplace_manifest("1.4.3"),
+        },
+    )
+
+    result = publish(client, cfg, make_proposal())
+
+    assert result.new_version == "1.4.4"
+    assert client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST) == "1.4.4"
+    assert client.marketplace_version_on(DEFAULT_BRANCH) == "1.4.4"
+    assert client.tree_of(DEFAULT_BRANCH)[SKILL_FILE] == UPDATED_SKILL
+    # The merge names the saved change that actually carries the recomputed number.
+    assert client.merge_calls[-1]["expected_head_sha"] == result.commit_sha
+    assert "1.4.4" in client.merge_calls[-1]["commit_title"]
+
+
+# ==============================================================================================
+# Reading the shared copy back after the merge
+# ==============================================================================================
+
+
+class ForgetfulMergeFakeGitHub(LocalFakeGitHub):
+    """A merge that carries the wording across and leaves the version number where it was.
+
+    This is the silent failure in its purest form. The repository looks right, and not one person
+    in Claude ever sees the new wording, because the number that tells Claude to fetch it again
+    never moved.
+    """
+
+    def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str:
+        head = self.pull_requests[number - 1]["head"]
+        carried = self.branch_changes.get(head, {})
+        self.branch_changes[head] = {
+            path: text
+            for path, text in carried.items()
+            if path not in (PLUGIN_MANIFEST, MARKETPLACE_MANIFEST)
+        }
+        return super().merge_pr(number, commit_title, expected_head_sha)
+
+
+def test_a_merge_that_left_the_version_unchanged_is_reported_not_celebrated(
+    cfg: Config,
+) -> None:
+    client = ForgetfulMergeFakeGitHub(starting_files())
+
+    with pytest.raises(PublishFailed) as refused:
+        publish(client, cfg, make_proposal())
+
+    message = refused.value.user_message
+    assert "reach everyone" in message
+    assert "ask for the change again" in message.lower()
+    for jargon in ("Traceback", "sha", "commit", "branch", "merge", "HTTP", "JSON"):
+        assert not re.search(rf"\b{jargon}\b", message, re.IGNORECASE)
+
+    # The wording did reach the repository, which is exactly why the person has to be told that
+    # it may not have reached them.
+    assert client.tree_of(DEFAULT_BRANCH)[SKILL_FILE] == UPDATED_SKILL
+    assert client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST) == START_VERSION
+
+    # And the working copy is gone, so asking again starts from nothing.
+    branch, _from_sha = client.created_branches[0]
+    assert branch not in client.branches
+
+
+class LosingMergeFakeGitHub(LocalFakeGitHub):
+    """A merge that reports success and carries nothing across at all."""
+
+    def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str:
+        head = self.pull_requests[number - 1]["head"]
+        self.branch_changes[head] = {}
+        return super().merge_pr(number, commit_title, expected_head_sha)
+
+
+def test_a_merge_that_carried_nothing_across_is_reported_not_celebrated(cfg: Config) -> None:
+    client = LosingMergeFakeGitHub(starting_files())
+
+    with pytest.raises(PublishFailed) as refused:
+        publish(client, cfg, make_proposal())
+
+    assert "reach everyone" in refused.value.user_message
+    assert client.tree_of(DEFAULT_BRANCH)[SKILL_FILE] == ORIGINAL_SKILL
+
+
+# ==============================================================================================
+# The copy the person was shown
+# ==============================================================================================
+
+
+def test_publish_refuses_when_the_shared_copy_moved_off_the_starting_point(cfg: Config) -> None:
+    """A change is only published against the exact copy the person was shown.
+
+    The version number is not the only thing that can move. If anything at all in the shared copy
+    changed after the person was shown what would change, then publishing now would publish
+    against a copy nobody ever looked at.
+    """
+    client = LocalFakeGitHub(starting_files())
+    client.simulate_someone_else_publishing(
+        {
+            f"{PLUGIN_DIR}/skills/{SKILL_NAME}/reference/house-style.md": (
+                "A note somebody else added while this change was waiting.\n"
+            )
+        }
+    )
+
+    with pytest.raises(PublishFailed) as refused:
+        publish(client, cfg, make_proposal(base_sha="sha-0"))
+
+    message = refused.value.user_message
+    assert "prepared again" in message
+    assert "nothing has been changed" in message.lower()
+
+    assert client.created_branches == []
+    assert client.commits == []
+    assert client.pull_requests == []
+    assert client.merged == []
+    assert client.tree_of(DEFAULT_BRANCH)[SKILL_FILE] == ORIGINAL_SKILL
+    assert client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST) == START_VERSION
+
+
+# ==============================================================================================
+# The merge names the change it is publishing
+# ==============================================================================================
+
+
+def test_the_merge_names_the_saved_change_this_publish_made(cfg: Config) -> None:
+    client = LocalFakeGitHub(starting_files())
+
+    result = publish(client, cfg, make_proposal())
+
+    assert len(client.merge_calls) == 1
+    assert client.merge_calls[0]["expected_head_sha"] == result.commit_sha
+    assert result.commit_sha == client.commits[-1]["sha"]
+
+
+class MeddledWorkingCopyFakeGitHub(LocalFakeGitHub):
+    """Somebody moves the working copy on after the change was saved and agreed to."""
+
+    def open_pr(self, head: str, base: str, title: str, body: str) -> int:
+        number = super().open_pr(head, base, title, body)
+        tree = dict(self.trees[self.branches[head]])
+        tree[SKILL_FILE] = (
+            "---\nname: how-we-write-briefs\ndescription: How to write a brief.\n---\n\n"
+            "Wording nobody agreed to.\n"
+        )
+        sha = self._next_sha("meddled")
+        self.trees[sha] = tree
+        self._move(head, sha)
+        return number
+
+
+def test_a_working_copy_changed_after_the_change_was_agreed_to_is_not_published(
+    cfg: Config,
+) -> None:
+    client = MeddledWorkingCopyFakeGitHub(starting_files())
+
+    with pytest.raises(PublishFailed):
+        publish(client, cfg, make_proposal())
+
+    assert client.merged == []
+    assert client.tree_of(DEFAULT_BRANCH)[SKILL_FILE] == ORIGINAL_SKILL
+
+
+# ==============================================================================================
+# Nothing left behind when it goes wrong
+# ==============================================================================================
+
+
+@pytest.mark.parametrize("failing_step", ["commit_files", "open_pr", "merge_pr"])
+def test_a_failure_after_the_working_copy_was_made_leaves_no_working_copy_behind(
+    cfg: Config, failing_step: str
+) -> None:
+    """A second attempt has to be able to start, and it cannot if the first one left its litter."""
+    client = LocalFakeGitHub(starting_files())
+    client.fail_on = {failing_step}
+
+    with pytest.raises(PublishFailed):
+        publish(client, cfg, make_proposal())
+
+    branch, _from_sha = client.created_branches[0]
+    assert branch not in client.branches
+    assert client.deleted_branches == [branch]
+
+    # Asking for exactly the same change again works, rather than tripping over the last attempt.
+    client.fail_on = set()
+    result = publish(client, cfg, make_proposal())
+
+    assert client.merged == [result.pr_number]
+    assert client.tree_of(DEFAULT_BRANCH)[SKILL_FILE] == UPDATED_SKILL
+    assert client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST) == result.new_version
+
+
+def test_a_publish_that_worked_keeps_its_working_copy(cfg: Config) -> None:
+    """Only a failed attempt is cleaned up. A finished one leaves its record alone."""
+    client = LocalFakeGitHub(starting_files())
+
+    publish(client, cfg, make_proposal())
+
+    assert client.deleted_branches == []
+
+
+def test_a_problem_clearing_up_does_not_hide_why_the_publish_failed(cfg: Config) -> None:
+    client = LocalFakeGitHub(starting_files())
+    client.fail_on = {"merge_pr", "delete_branch"}
+
+    with pytest.raises(PublishFailed) as refused:
+        publish(client, cfg, make_proposal())
+
+    assert "could not be merged" in refused.value.user_message
+
+
+class UnreadableJustBeforeMergeFakeGitHub(LocalFakeGitHub):
+    """The shared copy becomes unreadable in the gap between review and merging.
+
+    The last look at the shared copy before merging is what proves the version number is
+    really moving forward. When that look cannot happen, the honest answer is to stop:
+    merging anyway would mean publishing without knowing whether anybody will receive it.
+    """
+
+    def __init__(self, files: dict[str, str]) -> None:
+        super().__init__(files)
+        self.review_happened = False
+
+    def open_pr(self, head: str, base: str, title: str, body: str) -> int:
+        number = super().open_pr(head, base, title, body)
+        self.review_happened = True
+        return number
+
+    def get_file(self, path: str, ref: str) -> tuple[str, str]:
+        if self.review_happened:
+            raise ConnectionError("the shared copy could not be read")
+        return super().get_file(path, ref)
+
+
+def test_an_unreadable_shared_copy_just_before_merging_stops_rather_than_publishes_blind(
+    cfg: Config,
+) -> None:
+    """Fail closed. Nothing is merged, nothing is left behind, and the person is told."""
+    client = UnreadableJustBeforeMergeFakeGitHub(starting_files())
+
+    with pytest.raises(PublishFailed) as refused:
+        publish(client, cfg, make_proposal())
+
+    # The change was never merged, so the shared skills stand exactly where they stood.
+    assert client.merged == []
+    assert client.merge_calls == []
+    assert client.tree_of(DEFAULT_BRANCH)[SKILL_FILE] == ORIGINAL_SKILL
+    assert client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST) == START_VERSION
+
+    # And the working copy is gone, so asking again starts from nothing.
+    branch, _from_sha = client.created_branches[0]
+    assert branch not in client.branches
+
+    message = refused.value.user_message
+    assert "nothing was published" in message.lower() or "not reached" in message.lower()

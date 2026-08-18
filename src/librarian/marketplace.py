@@ -25,14 +25,13 @@ from __future__ import annotations
 import json
 import logging
 import posixpath
-import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
 from .config import Config
 from .errors import LibrarianError, SkillNotFound, UnsafePath
 from .github import GitHubClient
-from .paths import validate_skill_name
+from .paths import validate_plugin_dir, validate_skill_name
 
 __all__ = [
     "MARKETPLACE_MANIFEST",
@@ -262,12 +261,40 @@ def _wrong_source_shape_message(plugin_name: str) -> str:
     )
 
 
+def _looks_like_it_leaves_the_repository(raw: str) -> bool:
+    """Whether a source that is written the wrong way is also reaching somewhere it should not.
+
+    This decides nothing about safety. Every source that reaches it has already been refused,
+    and the only question left is which sentence the person reads: "this points somewhere
+    outside the library" or "this is a folder in the library, written the wrong way". Saying
+    the wrong one of those sends somebody looking for a problem that is not there.
+    """
+    return (
+        "\\" in raw
+        or "%" in raw
+        or raw.startswith("/")
+        or posixpath.isabs(raw)
+        or any(part == ".." for part in raw.split("/"))
+    )
+
+
 def _plugin_dir_from_source(plugin_name: str, source: Any) -> str:
     """Return the repository relative folder for a collection, or refuse the source.
 
-    Only a relative path beginning with ``./`` is supported. Every other kind of source, such
-    as another repository, a web address, or a package name, is reported as unsupported and
-    named, because quietly ignoring it would hide a whole collection of skills.
+    Two separate jobs happen here, and only the first one belongs to this module.
+
+    The first is the shape a marketplace source has to be written in: a relative path
+    beginning with ``./``. That is what an organization marketplace allows, and a source of
+    any other kind - another repository, a web address, a package name - is reported as
+    unsupported and named, because quietly ignoring it would hide a whole collection of
+    skills from the person asking.
+
+    The second is whether the folder it names is one this service may read and write at all.
+    That question is answered in exactly one place, :func:`paths.validate_plugin_dir`, which
+    is the same function the write gate uses. It used to be answered here as well, with its
+    own slightly different rules, which meant a folder could be acceptable to one of them and
+    not the other. There is now one definition, and this module only puts the collection's
+    name into the refusal so the person knows which collection to go and look at.
     """
     if source is None:
         raise LibrarianError(
@@ -297,38 +324,19 @@ def _plugin_dir_from_source(plugin_name: str, source: Any) -> str:
             _MSG_MANIFEST_SHAPE,
             detail=f"the source for {plugin_name!r} is longer than {_MAX_SOURCE_LENGTH} characters",
         )
-    if "\x00" in raw or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
-        raise UnsafePath(
-            _outside_source_message(plugin_name),
-            detail=f"the source for {plugin_name!r} has a control character in it",
-        )
-    if not raw.isascii() or unicodedata.normalize("NFKC", raw) != raw:
-        raise UnsafePath(
-            _outside_source_message(plugin_name),
-            detail=f"the source for {plugin_name!r} has characters outside plain ASCII",
-        )
-    if "\\" in raw or "%" in raw:
-        raise UnsafePath(
-            _outside_source_message(plugin_name),
-            detail=f"the source for {plugin_name!r} is not a plain relative path: {raw!r}",
-        )
 
-    # A step of ".." is checked before the "./" rule so the person is told the real problem.
-    if any(part == ".." for part in raw.split("/")):
-        raise UnsafePath(
-            _outside_source_message(plugin_name),
-            detail=f"the source for {plugin_name!r} steps outside the repository: {raw!r}",
-        )
-    if raw.startswith("/") or posixpath.isabs(raw):
-        raise UnsafePath(
-            _outside_source_message(plugin_name),
-            detail=f"the source for {plugin_name!r} starts at the top of a disk: {raw!r}",
-        )
+    # The documented shape of a marketplace source. This is the one rule that is genuinely
+    # about a marketplace rather than about folders, so it is the one rule that stays here.
     if not raw.startswith("./"):
-        # A web address, another repository, or a package name is a kind of source this service
-        # cannot honour at all. A plain folder name is merely written the wrong way. Saying which
-        # of the two it is saves the person a guess.
+        if _looks_like_it_leaves_the_repository(raw):
+            raise UnsafePath(
+                _outside_source_message(plugin_name),
+                detail=f"the source for {plugin_name!r} is not a folder in this repository: {raw!r}",
+            )
         if ":" in raw or "@" in raw:
+            # A web address, another repository, or a package name is a kind of source this
+            # service cannot honour at all. A plain folder name is merely written the wrong
+            # way. Saying which of the two it is saves the person a guess.
             raise LibrarianError(
                 _unsupported_source_message(plugin_name),
                 detail=f"the source for {plugin_name!r} is not a folder in this repository: {raw!r}",
@@ -337,34 +345,22 @@ def _plugin_dir_from_source(plugin_name: str, source: Any) -> str:
             _wrong_source_shape_message(plugin_name),
             detail=f"the source for {plugin_name!r} does not start with ./: {raw!r}",
         )
-
-    body = raw[2:].rstrip("/")
-    if not body:
+    if raw.rstrip("/") == ".":
+        # Refused below as well. It is caught here only so the person is told that the entry
+        # names the whole library rather than that it points somewhere outside it.
         raise LibrarianError(
             _MSG_MANIFEST_SHAPE,
             detail=f"the source for {plugin_name!r} points at the whole repository",
         )
 
-    parts = body.split("/")
-    for part in parts:
-        if part in ("", ".", ".."):
-            raise UnsafePath(
-                _outside_source_message(plugin_name),
-                detail=f"the source for {plugin_name!r} has an empty or relative step: {raw!r}",
-            )
-        if part != part.strip() or part.startswith(".") or part.endswith("."):
-            raise UnsafePath(
-                _outside_source_message(plugin_name),
-                detail=f"the source for {plugin_name!r} has an unusable folder name: {raw!r}",
-            )
-
-    tidied = posixpath.normpath(body)
-    if tidied != body:
+    # Everything else is the one definition of a folder this service may work in.
+    try:
+        return validate_plugin_dir(raw)
+    except UnsafePath as exc:
         raise UnsafePath(
             _outside_source_message(plugin_name),
-            detail=f"the source for {plugin_name!r} changes when tidied up: {raw!r}",
-        )
-    return tidied
+            detail=f"the source for {plugin_name!r} was refused: {exc.detail or exc.user_message}",
+        ) from exc
 
 
 # ==============================================================================================

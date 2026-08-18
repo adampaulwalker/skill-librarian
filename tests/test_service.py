@@ -13,6 +13,7 @@ otherwise.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -25,6 +26,7 @@ from librarian.errors import (
     LibrarianError,
     NotAuthorized,
     ProposalNotFound,
+    PublishFailed,
     SkillNotFound,
     UnsafePath,
 )
@@ -37,6 +39,8 @@ from tests.fakes import (
     FakeGitHubClient,
     PluginSpec,
     library,
+    marketplace_manifest_text,
+    plugin_manifest_text,
     skill_text,
 )
 
@@ -638,6 +642,214 @@ def test_two_people_can_each_publish_and_each_gets_their_own_credit(
 
 
 # ==============================================================================================
+# Who asked and who approved are two separate facts
+# ==============================================================================================
+
+
+def published_commit(gh: FakeGitHubClient, path: str = BRIEFS):
+    """The commit that carried one change onto its own branch."""
+    written = [c for c in gh.commit_list() if path in c.changed and c.branch != "main"]
+    assert written, "nothing was committed for that change"
+    return written[-1]
+
+
+def trailer_lines(message: str, label: str) -> list[str]:
+    return [line.strip() for line in message.splitlines() if line.strip().startswith(label)]
+
+
+def test_one_person_can_approve_a_change_another_person_asked_for(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """A second pair of eyes is a good way to work, so it is allowed."""
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+
+    answer = service.approve(
+        ANOTHER_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash
+    )
+
+    assert gh.files_on("main")[BRIEFS] == UPDATED_BRIEFS
+    assert "1.4.3" in answer
+
+
+def test_a_change_approved_by_someone_else_records_both_people(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """The history must never say a publish was let through by somebody who did not do it."""
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+
+    service.approve(ANOTHER_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    commit = published_commit(gh)
+    assert trailer_lines(commit.message, "Requested-By:") == [
+        "Requested-By: A Person <a.person@example.test>"
+    ]
+    assert trailer_lines(commit.message, "Approved-By:") == [
+        "Approved-By: Another Person <another@example.test>"
+    ]
+    assert "A Person" in commit.message
+    assert "Another Person" in commit.message
+
+
+def test_a_change_approved_by_the_person_who_asked_records_one_name(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """One person doing both needs one line saying so, not two saying the same thing."""
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+
+    service.approve(A_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    commit = published_commit(gh)
+    assert trailer_lines(commit.message, "Requested-By:") == [
+        "Requested-By: A Person <a.person@example.test>"
+    ]
+    assert trailer_lines(commit.message, "Approved-By:") == []
+    assert "Another Person" not in commit.message
+
+
+def test_the_author_of_a_change_stays_the_person_who_asked_for_it(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """Approving somebody else's change must not take the credit for asking for it."""
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+
+    service.approve(ANOTHER_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    commit = published_commit(gh)
+    assert commit.author_name == "A Person"
+    assert commit.author_email == "a.person@example.test"
+    assert commit.committer_name == APP_COMMITTER_NAME
+    assert commit.committer_email == APP_COMMITTER_EMAIL
+
+
+def test_the_confirmation_names_both_people_when_they_are_not_the_same_person(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+
+    answer = service.approve(
+        ANOTHER_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash
+    )
+
+    assert "Another Person approved a change requested by A Person." in answer
+    assert "your name is on it" not in answer
+
+
+def test_the_confirmation_does_not_invent_a_second_person(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+
+    answer = service.approve(A_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    assert "approved a change requested by" not in answer
+    assert "your name is on it" in answer
+
+
+def test_the_written_record_says_in_words_who_approved_whose_change(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """Somebody reading the history later should not have to decode a label to follow it."""
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+
+    service.approve(ANOTHER_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    sentence = "Another Person approved a change requested by A Person."
+    assert sentence in published_commit(gh).message
+    assert sentence in gh.pull_requests[1].body
+
+
+def test_the_same_person_under_a_different_spelling_is_still_one_person(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """The email settles it, so a nickname does not turn one person into two."""
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+    same_person_different_spelling = Actor(name="A. Person", email="A.Person@Example.test")
+
+    answer = service.approve(
+        same_person_different_spelling, gh, cfg, store, preview.proposal_id, preview.diff_hash
+    )
+
+    assert "approved a change requested by" not in answer
+    assert trailer_lines(published_commit(gh).message, "Approved-By:") == []
+
+
+def test_someone_else_cannot_approve_without_being_signed_in(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """Allowing a second pair of eyes must not open a door for nobody at all."""
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+    before = gh.files_on("main")
+
+    with pytest.raises(NotAuthorized):
+        service.approve(ANONYMOUS, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    assert gh.files_on("main") == before
+    assert gh.pull_requests == {}
+
+
+def test_someone_else_cannot_approve_with_the_wrong_fingerprint(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}
+    )
+    before = gh.files_on("main")
+
+    with pytest.raises(DiffMismatch):
+        service.approve(
+            ANOTHER_PERSON, gh, cfg, store, preview.proposal_id, "0" * 64
+        )
+
+    assert gh.files_on("main") == before
+    assert gh.pull_requests == {}
+
+
+def test_the_approve_tool_description_is_honest_about_what_it_checks(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """Anyone wiring this up must not read the fingerprint as proof a person agreed.
+
+    The fingerprint proves the text going out is the text that was shown. It cannot
+    prove a person was involved, because the two references travel in the conversation
+    itself. The only place a real approval can be collected is the thing hosting the
+    tools, so the description has to say so.
+    """
+    description = service.APPROVE_TOOL_DESCRIPTION.lower()
+
+    assert "do not prove" in description
+    assert "shown" in description
+    assert "said yes" in description or "confirmation" in description
+    assert "outside this tool" in description
+
+
+def test_the_module_says_plainly_that_the_fingerprint_is_not_an_approval(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    text = (service.__doc__ or "").lower()
+
+    assert "does not prove that a person approved" in text
+    assert "conversation" in text
+
+
+# ==============================================================================================
 # history
 # ==============================================================================================
 
@@ -811,3 +1023,154 @@ def test_the_write_gate_refuses_a_collection_folder_the_manifest_smuggled_in(
 
     assert gh.files_on("main") == before
     assert gh.pull_requests == {}
+
+
+# ==============================================================================================
+# Two people publishing at the same time
+# ==============================================================================================
+
+
+WEEKLY = "plugins/alpha-pack/skills/weekly-report/SKILL.md"
+
+
+def version_parts(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def someone_else_publishes(gh: FakeGitHubClient, version: str, weekly_text: str) -> None:
+    """Another person's change lands in the shared copy, complete with its own version move.
+
+    This is what a real competing publish leaves behind: their wording, their collection's
+    version number moved on, and the library's own list of collections moved with it.
+    """
+    gh.move_default_branch(
+        {
+            WEEKLY: weekly_text,
+            ALPHA_MANIFEST: plugin_manifest_text("alpha-pack", version),
+            MARKETPLACE_MANIFEST: marketplace_manifest_text(
+                dataclasses.replace(ALPHA, version=version), BETA
+            ),
+        }
+    )
+
+
+def test_a_change_overtaken_mid_publish_still_moves_the_version_past_the_other_one(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """Two people publish at once, and the second one does not go out silently.
+
+    Both start from version 1.4.2 and both work out 1.4.3. The other person gets there
+    first, so by the time this change is ready to merge the shared copy already says 1.4.3.
+    Merging on that number would put this wording into the repository under a version number
+    that has already been delivered, and Claude would keep serving the copy people already
+    have. Nobody would see the new wording and nobody would be told anything was wrong.
+
+    So the version number is worked out again from the shared copy in the moment before the
+    change is put forward, and this change goes out as 1.4.4 instead. That is the guard this
+    test exists for: take it away and the wording lands under a number that never moved past
+    the other person's.
+    """
+    other_persons_weekly = skill_text(
+        "weekly-report", "How the weekly report is put together.", "Somebody else's new wording."
+    )
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}, "Because."
+    )
+
+    # The other person's change lands the moment this one saves its work, which is exactly
+    # when a real race arrives: both started from the same copy and one of them got there first.
+    gh.after_next(
+        "commit_files", lambda client: someone_else_publishes(client, "1.4.3", other_persons_weekly)
+    )
+
+    answer = service.approve(A_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    assert gh.hooks_fired == ["commit_files"], "the race never happened, so this proves nothing"
+
+    landed = version_of(gh, ALPHA_MANIFEST)
+    assert landed == "1.4.4"
+    assert version_parts(landed) > version_parts("1.4.3"), (
+        "the wording went out under a version number that had already been delivered"
+    )
+
+    # Both settings files moved together, or the change reaches nobody.
+    assert entry_named(gh, "alpha-pack")["version"] == landed
+    assert landed in answer
+
+    # This change arrived, and the other person's change was not quietly undone by it.
+    assert gh.files_on("main")[BRIEFS] == UPDATED_BRIEFS
+    assert gh.files_on("main")[WEEKLY] == other_persons_weekly
+
+    # Nobody else's collection was dragged along.
+    assert version_of(gh, BETA_MANIFEST) == "2.0.0"
+    assert entry_named(gh, "beta-pack")["version"] == "2.0.0"
+
+    # The change people read before it was merged names the version that really went out,
+    # rather than the number that was worked out before the other person got there first.
+    pull_request = gh.pull_requests[1]
+    assert landed in pull_request.title
+    assert landed in pull_request.body
+    assert "1.4.3" not in pull_request.title
+
+
+def test_the_change_overtaken_mid_publish_is_still_merged_only_as_approved(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """Working out a new version number is still a merge of exactly the change that was saved."""
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}, "Because."
+    )
+    gh.after_next(
+        "commit_files",
+        lambda client: someone_else_publishes(
+            client, "1.4.3", skill_text("weekly-report", "How the weekly report is put together.")
+        ),
+    )
+
+    service.approve(A_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    # One merge, and it published the saved change that carries the recomputed version number.
+    assert gh.merge_attempts == 1
+    merged = [pull for pull in gh.pull_requests.values() if pull.merged]
+    assert len(merged) == 1
+    assert merged[0].base == "main"
+    # The commit that was merged is the last one made on the working copy, not an earlier one.
+    assert gh.branches[merged[0].head] == gh.commits[gh.branches["main"]].parents[-1]
+
+
+def test_a_third_publish_landing_between_review_and_merge_cannot_ship_a_used_version(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """The version number is checked against where the shared copy really was, not a stale note.
+
+    Two other people publish while this change is being prepared, one after the other. The
+    first arrives while this change is saving its work, so this change moves itself on to
+    1.4.4 to sit past their 1.4.3. The second arrives later, in the gap between this change
+    being put up for review and being merged, and takes the shared copy to 1.4.4 as well.
+
+    By the time this change merges, 1.4.4 has already been delivered to everyone. Merging
+    now leaves the shared copy still saying 1.4.4, so every person who already fetched 1.4.4
+    keeps the wording they have and never sees this change. That is the silent failure this
+    whole module exists to prevent, so it has to be reported rather than reported as success.
+
+    The trap it guards against is comparing what landed with a version number noted down
+    earlier. Measured against the stale 1.4.3 the merge looks like a step forward. Measured
+    against what the shared copy actually held in the moment before the merge, it is not.
+    """
+    weekly = skill_text("weekly-report", "How the weekly report is put together.")
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}, "Because."
+    )
+
+    # Somebody else gets there first, so this change moves itself on to 1.4.4.
+    gh.after_next("commit_files", lambda client: someone_else_publishes(client, "1.4.3", weekly))
+    # And a third person lands 1.4.4 in the gap before this one is merged.
+    gh.after_next("open_pr", lambda client: someone_else_publishes(client, "1.4.4", weekly))
+
+    with pytest.raises(PublishFailed) as refused:
+        service.approve(A_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    assert gh.hooks_fired == ["commit_files", "open_pr"], (
+        "the race never happened, so this proves nothing"
+    )
+    assert "reach everyone" in refused.value.user_message

@@ -13,7 +13,28 @@ up in two collections is reported as the clash it is rather than quietly picked.
 One convention worth stating because another module depends on it: a proposal records
 ``requested_by`` as a single string in the standard git form ``Name <email>``, because
 that is the only field on a proposal that can carry both halves of the human's identity
-through to the commit author.
+through to the commit author. ``approve`` records the person who approved in the same
+form, on a copy of the proposal, so that a publish one person asked for and another
+person let through is written down as exactly that.
+
+What the fingerprint proves, and what it does not:
+
+Every proposal carries a fingerprint of the exact text the person was shown, and
+``approve`` refuses anything whose fingerprint does not match. That proves the text being
+published is the text that was shown. It does not prove that a person approved anything.
+
+The proposal reference and its fingerprint both appear in the same conversation the model
+can read. Anything that can read that conversation can repeat them, so a model that has
+been steered by instructions hidden in some text it was asked to work with could call
+propose and then approve on its own, with no person involved at any point. This service
+cannot tell that apart from a real approval, and no amount of extra wording in a tool
+description changes that.
+
+So treat the fingerprint as a check that the right content goes out, not as proof that
+somebody agreed to it. The real approval has to happen in whatever is hosting these
+tools: show the person the change, get a genuine yes from them, and only then let the
+approve tool run. A setup that lets a model call approve without a person having seen the
+change will publish that change, and this module will have no way of knowing.
 """
 
 from __future__ import annotations
@@ -84,6 +105,37 @@ class Actor:
 ANONYMOUS = Actor()
 
 
+#: What the host should put in front of a person before the ``approve`` tool is allowed to
+#: run, and what the two references handed back by ``propose_edit`` do and do not prove.
+#: The wording is deliberately blunt about the limit, because a reader who believes the
+#: fingerprint is an approval control will build something that publishes on its own.
+APPROVE_TOOL_DESCRIPTION = (
+    "Publish a change that was already prepared by propose_edit. Before this tool runs, "
+    "the person must have been shown the whole difference and must have said yes to it "
+    "in their own words. Pass back the same proposal_id and diff_hash they were shown. "
+    "Those two references only prove that the text being published is the text that was "
+    "shown. They do not prove that a person agreed to it, because both of them appear in "
+    "the conversation and anything that can read the conversation can repeat them. The "
+    "real approval is the person's confirmation, and it has to be collected outside this "
+    "tool. Whoever approves is written into the record by name, and when that is not the "
+    "person who asked for the change, both names are written down."
+)
+
+
+@dataclass(frozen=True)
+class ApprovedProposal(Proposal):
+    """A proposal on its way to be published, carrying the person who approved it.
+
+    ``requested_by`` still names the person who asked for the change, and stays the git
+    author of the commit. ``approved_by`` names the person who let it through, in the same
+    ``Name <email>`` form. When one person did both, the two fields hold exactly the same
+    string, so a plain comparison in the publishing code is enough to tell the two cases
+    apart without repeating the rules for matching one person to another.
+    """
+
+    approved_by: str = ""
+
+
 @dataclass(frozen=True)
 class ProposalPreview:
     """What ``propose_edit`` hands back so the person can be shown the change."""
@@ -124,6 +176,73 @@ def _require_identity(actor: Actor, action: str) -> None:
         + ". Every change to the shared skills is signed with the name of the person "
         "who asked for it, and a change with nobody's name on it is worse than no "
         "change at all. Please sign in to the connector and try again.",
+    )
+
+
+def _identity_name(identity: str) -> str:
+    """The readable name out of a ``Name <email>`` string, for showing to a person."""
+    text = identity.strip()
+    if not text:
+        return "someone whose name was not recorded"
+    name = text.split("<", 1)[0].strip()
+    return name or text
+
+
+def _identity_email(identity: str) -> str:
+    """The email out of a ``Name <email>`` string, or an empty string if there is none."""
+    text = identity.strip()
+    if "<" in text and ">" in text:
+        inside = text.split("<", 1)[1].split(">", 1)[0].strip()
+        return inside
+    if "@" in text and " " not in text:
+        return text
+    return ""
+
+
+def _same_person(one: str, other: str) -> bool:
+    """Whether two recorded identities are the same human.
+
+    The email decides when both sides have one, because a person can appear with their
+    name written differently in two places and still be the same person. Capitalisation
+    never decides.
+    """
+    left = _identity_email(one)
+    right = _identity_email(other)
+    if left and right:
+        return left.casefold() == right.casefold()
+    return one.strip().casefold() == other.strip().casefold()
+
+
+def _approval_record_line(requested_by: str, approved_by: str, one_person: bool) -> str:
+    """One sentence naming who asked and who approved, for the permanent record."""
+    approver = _identity_name(approved_by)
+    if one_person:
+        return f"{approver} asked for this change and approved it."
+    return f"{approver} approved a change requested by {_identity_name(requested_by)}."
+
+
+def _with_approver(proposal: Proposal, approved_by: str, one_person: bool) -> ApprovedProposal:
+    """A copy of the proposal that also carries the person who approved it.
+
+    The sentence naming both people is added to the plain English summary as well as being
+    carried in its own field, because the summary is what ends up in the body of the commit
+    and of the pull request. Nothing that the fingerprint covers is touched, so the copy
+    still fingerprints to the same value as the proposal the person was shown.
+    """
+    record = _approval_record_line(proposal.requested_by, approved_by, one_person)
+    summary = (proposal.plain_summary or "").rstrip()
+    combined = f"{summary}\n\n{record}" if summary else record
+    return ApprovedProposal(
+        id=proposal.id,
+        skill_name=proposal.skill_name,
+        requested_by=proposal.requested_by,
+        base_sha=proposal.base_sha,
+        files=dict(proposal.files),
+        diff_text=proposal.diff_text,
+        plain_summary=combined,
+        diff_hash=proposal.diff_hash,
+        created_at=proposal.created_at,
+        approved_by=approved_by,
     )
 
 
@@ -605,7 +724,18 @@ def approve(
     diff_hash: str,
     bump: str = "patch",
 ) -> str:
-    """Publish a change the person has already been shown, and only that change."""
+    """Publish a change the person has already been shown, and only that change.
+
+    The approver does not have to be the person who asked. A second pair of eyes is a
+    good way to work, so this does not stand in its way. What it will not do is let the
+    record say the change was approved by whoever happened to ask for it: the person who
+    asked and the person who approved are recorded separately, and both names go into the
+    history whenever they are two different people.
+
+    Worth being clear about the limit of this check: matching the fingerprint proves the
+    text being published is the text that was shown, and nothing more. It is not proof
+    that a person agreed to anything. See the note at the top of this module.
+    """
     _require_identity(actor, "publish this change")
 
     proposal = store.get(proposal_id)
@@ -634,19 +764,34 @@ def approve(
             "Please sign in and ask for the change again.",
         )
 
-    result = publisher.publish(gh, cfg, proposal, bump)
+    # Who approved is recorded on its own, next to who asked, rather than one standing in
+    # for the other. When the same person did both, the two are stored as the identical
+    # string so that the publishing code can tell the two cases apart by comparing them.
+    one_person = _same_person(proposal.requested_by, actor.git_identity)
+    approved_by = proposal.requested_by if one_person else actor.git_identity
+    result = publisher.publish(gh, cfg, _with_approver(proposal, approved_by, one_person), bump)
     store.delete(proposal.id)
 
     live_by = _format_live_by(getattr(result, "estimated_live_by", None))
     collection = getattr(result, "plugin_name", "") or ""
     where = f" in the {collection} collection" if collection else ""
+    requester_name = _identity_name(proposal.requested_by)
+    approver_name = _identity_name(approved_by)
+    if one_person:
+        who_line = f"It went in as change number {result.pr_number}, and your name is on it."
+    else:
+        who_line = (
+            f"{approver_name} approved a change requested by {requester_name}. It went in "
+            f"as change number {result.pr_number}, and both names are on it: "
+            f"{requester_name} asked for the change and {approver_name} approved it."
+        )
     lines = [
         f"Done. The skill called {proposal.skill_name}{where} has been updated and the "
         f"change is now part of the shared library as version {result.new_version}.",
         "",
         proposal.plain_summary,
         "",
-        f"It went in as change number {result.pr_number}, and your name is on it.",
+        who_line,
         "",
         _sync_wording(cfg, proposal.skill_name, result.new_version),
     ]

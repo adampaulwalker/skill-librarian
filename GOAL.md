@@ -82,6 +82,7 @@ The librarian collapses those seven steps into: describe the change in chat, app
 | 1 | built single-tenant by mistake; spec hardcoded one plugin directory | spec generalized, discovery module added, testbed rebuilt with two plugins | done |
 | 2 | integrator found publisher trusted a raw plugin_dir the edit path validated, so the last gate before a write trusted repository content the first gate refuses | validate_plugin_dir now runs at the write gate, regression test added | done |
 | 3 | live run exposed two defects the fakes missed: a garbled delivery sentence ("around usually within about 30 minutes"), and a 404 for an absent optional folder logged as a failure | wording composed in one place, 404 moved to debug, regression assertion added | done |
+| 4 | shared fake drifted from the real client (old `merge_pr` signature, an escape hatch for writing straight to the default branch, a merge that stamped a whole snapshot over the shared copy); the pull request was opened before the version was recomputed, so it could name a version that never shipped; path validation defined twice | fake now holds the real client's promises and can move the shared copy mid-publish, pull request opened after the recompute, marketplace delegates to `paths.validate_plugin_dir`, `diffing.py` deleted, race proved by removing the guard and watching it fail | done |
 
 ## Proven live, 2026-08-18
 
@@ -106,5 +107,13 @@ Against `adampaulwalker/skill-librarian-testbed`, a real private repository hold
 - One human check nobody can do without an organization owner's screen: whether the GitHub source
   option appears under Organization settings, Plugins, Add plugin. Anthropic called it private beta in
   February and documents it as normal in August.
-- Known weaknesses under Codex review: duplicate path-validation logic in two modules, dead code in
-  `diffing.py`, and three different fake GitHub clients in the suite.
+- Fake versus real drift: `delete_branch` exists only on the fake in `tests/test_publisher.py`. The
+  real `GitHubClient` has no such operation, so `_remove_working_copy` is a no-op in production and a
+  failed publish leaves its branch behind. Retrying the same proposal then collides on the branch
+  name, because the name is built from the proposal id. The cleanup tests pass only because that one
+  fake can do something production cannot.
+- Three fake GitHub clients remain: the shared one in `tests/fakes.py`, `LocalFakeGitHub` in
+  `tests/test_publisher.py`, and `StrictFakeGitHubClient` in `tests/test_marketplace.py`.
+- Closed 2026-08-18: duplicate path validation (marketplace now delegates to
+  `paths.validate_plugin_dir`), dead code in `diffing.py` (deleted), and the shared fake's drift from
+  the real client (it now enforces the approved head and refuses the default branch).

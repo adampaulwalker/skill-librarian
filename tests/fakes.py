@@ -3,6 +3,27 @@
 It stores a full snapshot of every file for each commit, which keeps the tests
 easy to read: a commit is just "these were the files afterwards, and this is who
 asked for it".
+
+This fake holds the same promises the real client holds, and it is worth saying why
+that matters rather than treating it as tidiness. A fake that is more permissive than
+the thing it stands in for makes the suite prove nothing: the tests pass, and the
+behaviour they were written to guarantee is missing from production. Three promises
+are kept here deliberately, because each one is a promise the real client makes:
+
+1. A commit is never written straight onto the branch everyone reads from. The name is
+   compared the way the real client compares it, so no spelling of that branch slips
+   past, and there is no way to switch the refusal off.
+2. A merge names the exact saved change it is publishing, and is refused when the
+   working copy has moved on to anything else since. That is what stops content
+   nobody agreed to from being published.
+3. A merge carries across what the working copy changed, laid over whatever the shared
+   copy holds at that moment. It does not stamp a whole snapshot over the shared copy,
+   because that would silently undo somebody else's change that landed in the meantime,
+   and a test about two people publishing at once would then be testing nothing.
+
+The shared copy can also be made to move partway through a piece of work, which is how
+a test recreates two people publishing at the same time. See :meth:`after_next` and
+:meth:`move_default_branch`.
 """
 
 from __future__ import annotations
@@ -10,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,8 +77,6 @@ class FakeGitHubClient:
     default_branch: str = "main"
     committer_name: str = APP_COMMITTER_NAME
     committer_email: str = APP_COMMITTER_EMAIL
-    # A publish must never push straight to the default branch, so the fake refuses.
-    allow_direct_default_branch_commit: bool = False
     fail_merge: bool = False
 
     commits: dict[str, FakeCommit] = field(default_factory=dict)
@@ -64,6 +84,16 @@ class FakeGitHubClient:
     pull_requests: dict[int, FakePullRequest] = field(default_factory=dict)
     calls: list[tuple[str, Any]] = field(default_factory=list)
     merge_attempts: int = 0
+
+    #: What each working copy has changed since it was cut, so a merge carries those files
+    #: across rather than stamping a whole snapshot over the shared copy.
+    branch_changes: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: One-shot callbacks to run straight after a named operation. See :meth:`after_next`.
+    pending_hooks: dict[str, list[Callable[["FakeGitHubClient"], None]]] = field(
+        default_factory=dict
+    )
+    #: Every hook that really did run, so a test can prove the thing it set up happened.
+    hooks_fired: list[str] = field(default_factory=list)
 
     _counter: itertools.count = field(default_factory=lambda: itertools.count(1))
 
@@ -105,6 +135,53 @@ class FakeGitHubClient:
 
     def commit_list(self) -> list[FakeCommit]:
         return list(self.commits.values())
+
+    # -- making the shared copy move partway through --------------------------
+
+    def move_default_branch(self, files: dict[str, str]) -> str:
+        """Somebody else publishes to the shared copy, laying these files over what is there.
+
+        This is the whole point of the mechanism: a change that is already in flight has to
+        cope with the shared copy no longer standing where it stood when the change started.
+        """
+        head = self.branches[self.default_branch]
+        snapshot = dict(self.commits[head].files)
+        snapshot.update(files)
+        sha = self._store_commit(
+            message="Somebody else published a change",
+            branch=self.default_branch,
+            parents=[head],
+            files=snapshot,
+            changed=set(files),
+            author_name="Another Person",
+            author_email="another@example.com",
+        )
+        self.branches[self.default_branch] = sha
+        return sha
+
+    def after_next(
+        self, operation: str, callback: Callable[["FakeGitHubClient"], None]
+    ) -> None:
+        """Run ``callback`` once, straight after the next call to ``operation``.
+
+        One shot on purpose. A callback that fires after every call to an operation makes a
+        test pass or fail for reasons the test never intended, because publishing saves work
+        more than once when it has to move a version number on.
+        """
+        self.pending_hooks.setdefault(operation, []).append(callback)
+
+    def _fire(self, operation: str) -> None:
+        waiting = self.pending_hooks.pop(operation, [])
+        for callback in waiting:
+            self.hooks_fired.append(operation)
+            callback(self)
+
+    def _is_shared_branch(self, branch: str) -> bool:
+        """The same comparison the real client makes, so no spelling slips past the refusal."""
+        cleaned = (branch or "").strip()
+        if cleaned.startswith("refs/heads/"):
+            cleaned = cleaned[len("refs/heads/") :]
+        return cleaned.casefold() == (self.default_branch or "").strip().casefold()
 
     # -- protocol -------------------------------------------------------------
 
@@ -166,6 +243,8 @@ class FakeGitHubClient:
                 "I could not find the starting point for that change. Nothing was published.",
             )
         self.branches[name] = from_sha
+        self.branch_changes[name] = {}
+        self._fire("create_branch")
 
     def commit_files(
         self,
@@ -176,7 +255,8 @@ class FakeGitHubClient:
         author_email: str,
     ) -> str:
         self.calls.append(("commit_files", (branch, sorted(files), author_name)))
-        if branch == self.default_branch and not self.allow_direct_default_branch_commit:
+        # The real client nails this door shut with no way to open it, so this one does too.
+        if self._is_shared_branch(branch):
             raise _fake_error(
                 PublishFailed,
                 "A change must be reviewed before it goes into the shared library. "
@@ -215,6 +295,10 @@ class FakeGitHubClient:
             author_email=author_email,
         )
         self.branches[branch] = sha
+        # Remember what this working copy has changed, so a merge lays exactly these files over
+        # whatever the shared copy holds by then rather than overwriting all of it.
+        self.branch_changes.setdefault(branch, {}).update(files)
+        self._fire("commit_files")
         return sha
 
     def open_pr(self, head: str, base: str, title: str, body: str) -> int:
@@ -228,9 +312,18 @@ class FakeGitHubClient:
         self.pull_requests[number] = FakePullRequest(
             number=number, head=head, base=base, title=title, body=body
         )
+        self._fire("open_pr")
         return number
 
-    def merge_pr(self, number: int, commit_title: str) -> str:
+    def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str:
+        """Merge, and only the saved change that was actually agreed to.
+
+        ``expected_head_sha`` names that saved change. The real client hands it to GitHub,
+        which refuses the merge when the working copy has been moved to anything else since,
+        so this refuses on exactly the same terms. Without that, anybody able to write to the
+        repository could swap the wording between the moment a person agrees to it and the
+        moment it is published, and nothing in the suite would notice.
+        """
         self.calls.append(("merge_pr", number))
         self.merge_attempts += 1
         pull = self.pull_requests.get(number)
@@ -240,20 +333,41 @@ class FakeGitHubClient:
                 "The change could not be merged into the shared library. "
                 "Nothing has been published.",
             )
+        pinned = (expected_head_sha or "").strip()
+        if not pinned:
+            raise _fake_error(
+                PublishFailed,
+                "I was not told which approved version of the change to publish, so nothing "
+                "was published. Please ask for the change again.",
+            )
+        if self.branches[pull.head] != pinned:
+            raise _fake_error(
+                PublishFailed,
+                "The change was edited after it was approved, so nothing was published. "
+                "Please ask for the change again, read it through, and approve the new one.",
+            )
+
         head_commit = self.commits[self.branches[pull.head]]
         base_sha = self.branches[pull.base]
+        # What the working copy changed, laid over the shared copy as it stands right now. A
+        # change somebody else published in the meantime survives, exactly as it would on
+        # GitHub, so a test about two people publishing at once is testing something real.
+        carried = dict(self.branch_changes.get(pull.head, {}))
+        snapshot = dict(self.commits[base_sha].files)
+        snapshot.update(carried)
         merge_sha = self._store_commit(
             message=commit_title,
             branch=pull.base,
             parents=[base_sha, head_commit.sha],
-            files=dict(head_commit.files),
-            changed=set(head_commit.changed),
+            files=snapshot,
+            changed=set(carried),
             author_name=head_commit.author_name,
             author_email=head_commit.author_email,
         )
         self.branches[pull.base] = merge_sha
         pull.merged = True
         pull.merge_commit_sha = merge_sha
+        self._fire("merge_pr")
         return merge_sha
 
     def list_commits(self, path: str, limit: int) -> list[dict]:

@@ -9,6 +9,10 @@ Two things in here matter more than the plumbing:
    contents API does not let the author and the committer be set independently.
 2. Secrecy. The GitHub App private key and the installation access token are never
    written to a log, never put into an error message, and never shown in a repr.
+3. Only what was approved gets published. A merge names the exact commit that was
+   approved, so GitHub refuses the merge if anyone moved the branch in the meantime,
+   and a commit is never written straight onto the branch everyone reads from,
+   because a change written there reaches nobody.
 """
 
 from __future__ import annotations
@@ -87,6 +91,18 @@ _MSG_MERGE_REFUSED = (
     "The change could not be merged into the shared library. Nothing has been "
     "published, and someone who manages the library will need to take a look."
 )
+_MSG_MERGE_HEAD_MOVED = (
+    "The change was edited after it was approved, so nothing was published. "
+    "Please ask for the change again, read it through, and approve the new one."
+)
+_MSG_MERGE_NO_PIN = (
+    "I was not told which approved version of the change to publish, so nothing "
+    "was published. Please ask for the change again."
+)
+_MSG_NO_DIRECT_TO_SHARED = (
+    "A change has to be reviewed before it becomes part of the shared library, so "
+    "I will not write it in directly. Nothing was published."
+)
 
 
 def _error(
@@ -123,7 +139,9 @@ class GitHubClient(Protocol):
 
     def open_pr(self, head: str, base: str, title: str, body: str) -> int: ...
 
-    def merge_pr(self, number: int, commit_title: str) -> str: ...
+    # expected_head_sha is the commit that was approved. The merge must be refused
+    # if the branch no longer points at it, so that only approved content is published.
+    def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str: ...
 
     def list_commits(self, path: str, limit: int) -> list[dict]: ...
 
@@ -178,6 +196,21 @@ def _is_rate_limited(response: httpx.Response) -> bool:
     except Exception:  # pragma: no cover - a body that cannot be decoded
         body = ""
     return "rate limit" in body or "secondary rate" in body or "abuse detection" in body
+
+
+def _head_moved(response: httpx.Response) -> bool:
+    """True when GitHub refused the merge because the branch is no longer where it was.
+
+    The merge names the approved commit, so GitHub answers with a conflict and says the
+    head branch was modified when someone has moved the branch since the approval. A
+    plain merge conflict comes back with the same conflict answer, which is why the
+    wording is read rather than the code alone.
+    """
+    try:
+        body = response.text.lower()
+    except Exception:  # pragma: no cover - a body that cannot be decoded
+        return False
+    return "head branch was modified" in body or "did not match" in body
 
 
 class _RestClient:
@@ -454,6 +487,18 @@ class _RestClient:
 
     # -- writing --------------------------------------------------------------
 
+    def _is_shared_branch(self, branch: str) -> bool:
+        """True when the name points at the branch the whole organization reads from.
+
+        The comparison ignores surrounding spaces, an optional full reference prefix,
+        and letter case, so that none of those spellings can slip a direct write past
+        the check.
+        """
+        cleaned = (branch or "").strip()
+        if cleaned.startswith("refs/heads/"):
+            cleaned = cleaned[len("refs/heads/") :]
+        return cleaned.casefold() == (self.default_branch or "").strip().casefold()
+
     def create_branch(self, name: str, from_sha: str) -> None:
         self._request(
             "POST",
@@ -471,6 +516,12 @@ class _RestClient:
         author_email: str,
     ) -> str:
         """Commit whole files, recording the human as the author of the change."""
+        # A commit written straight onto the branch everyone reads from reaches nobody,
+        # because people only pick up a change when a reviewed change is merged into it.
+        # There is no reason for this service to ever do that, so the door is nailed shut
+        # here rather than only in the code that calls it.
+        if self._is_shared_branch(branch):
+            raise _error(PublishFailed, _MSG_NO_DIRECT_TO_SHARED)
         if not files:
             raise _error(
                 PublishFailed,
@@ -572,18 +623,41 @@ class _RestClient:
             )
         return number
 
-    def merge_pr(self, number: int, commit_title: str) -> str:
-        """Merge once. A merge is never retried, because a blind retry can double up."""
+    def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str:
+        """Merge once, and only the commit that was approved.
+
+        `expected_head_sha` is the commit the person was shown and agreed to. It is
+        sent to GitHub, which then refuses the merge if the branch has been moved to
+        anything else since. Without it, anyone able to write to the repository could
+        swap the content between approval and publication.
+
+        A merge is never retried, because a blind retry can double up.
+        """
+        pinned = (expected_head_sha or "").strip()
+        if not pinned:
+            raise _error(PublishFailed, _MSG_MERGE_NO_PIN)
         headers = self._base_headers()
         headers["Authorization"] = self._auth_header()
         response = self._send(
             "PUT",
             self._repo_url(f"/pulls/{number}/merge"),
             headers=headers,
-            json_body={"commit_title": commit_title, "merge_method": self.merge_method},
+            json_body={
+                "commit_title": commit_title,
+                "merge_method": self.merge_method,
+                # GitHub merges only if the branch still points here.
+                "sha": pinned,
+            },
             writing=True,
         )
-        if response.status_code in (405, 409, 422):
+        if response.status_code == 409:
+            self._log_failure(response)
+            raise _error(
+                PublishFailed,
+                _MSG_MERGE_HEAD_MOVED if _head_moved(response) else _MSG_MERGE_REFUSED,
+                self._detail(response),
+            )
+        if response.status_code in (405, 422):
             self._log_failure(response)
             raise _error(PublishFailed, _MSG_MERGE_REFUSED, self._detail(response))
         self._raise_for_status(response, writing=True)

@@ -106,8 +106,15 @@ def git_data_handler(
     new_commit_sha: str = "newcommitsha",
     merge_sha: str = "mergesha",
     merge_status: int = 200,
+    merge_message: str = "not mergeable",
+    branch_head_now: str | None = None,
 ) -> Callable[[httpx.Request], httpx.Response]:
-    """Answers the whole branch, commit, pull request and merge conversation."""
+    """Answers the whole branch, commit, pull request and merge conversation.
+
+    When `branch_head_now` is set, the merge endpoint behaves the way GitHub does when
+    a merge names the commit it expects: it refuses with a conflict unless the branch
+    still points at that exact commit.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -150,7 +157,14 @@ def git_data_handler(
             return json_response({"number": 17}, status=201)
         if path.endswith("/merge") and request.method == "PUT":
             if merge_status != 200:
-                return json_response({"message": "not mergeable"}, status=merge_status)
+                return json_response({"message": merge_message}, status=merge_status)
+            if branch_head_now is not None:
+                sent = json.loads(request.content or b"{}").get("sha")
+                if sent != branch_head_now:
+                    return json_response(
+                        {"message": "Head branch was modified. Review and try the merge again."},
+                        status=409,
+                    )
             return json_response({"merged": True, "sha": merge_sha})
         return json_response({"message": "not found"}, status=404)
 
@@ -601,7 +615,7 @@ def test_open_pr_returns_the_number(rsa_key: tuple[str, Any]) -> None:
 
 def test_merge_returns_the_commit_that_landed(rsa_key: tuple[str, Any]) -> None:
     api = RecordingAPI(git_data_handler())
-    sha = app_client(api, rsa_key).merge_pr(17, "Update onboarding")
+    sha = app_client(api, rsa_key).merge_pr(17, "Update onboarding", "approvedsha")
     assert sha == "mergesha"
     body = api.body_for("PUT", "/merge")
     assert body["merge_method"] == "merge"
@@ -610,7 +624,7 @@ def test_merge_returns_the_commit_that_landed(rsa_key: tuple[str, Any]) -> None:
 def test_a_refused_merge_is_never_retried(rsa_key: tuple[str, Any]) -> None:
     api = RecordingAPI(git_data_handler(merge_status=405))
     with pytest.raises(PublishFailed) as failure:
-        app_client(api, rsa_key).merge_pr(17, "Update onboarding")
+        app_client(api, rsa_key).merge_pr(17, "Update onboarding", "approvedsha")
 
     assert api.count("/merge") == 1, "a merge is attempted once and never repeated blindly"
     assert_plain_english(failure.value.user_message)
@@ -624,8 +638,151 @@ def test_a_merge_github_reports_as_unmerged_is_a_failure(rsa_key: tuple[str, Any
 
     api = RecordingAPI(handler)
     with pytest.raises(PublishFailed) as failure:
-        app_client(api, rsa_key).merge_pr(17, "Update onboarding")
+        app_client(api, rsa_key).merge_pr(17, "Update onboarding", "approvedsha")
     assert_plain_english(failure.value.user_message)
+
+
+# ---------------------------------------------------------------------------
+# only the approved commit may be published
+# ---------------------------------------------------------------------------
+
+
+def test_merge_names_the_approved_commit_so_github_can_refuse_a_swap(
+    rsa_key: tuple[str, Any]
+) -> None:
+    api = RecordingAPI(git_data_handler())
+    app_client(api, rsa_key).merge_pr(17, "Update onboarding", "approvedsha")
+
+    body = api.body_for("PUT", "/merge")
+    assert body["sha"] == "approvedsha", (
+        "the merge has to name the commit that was approved, or GitHub will merge "
+        "whatever the branch points at when the merge runs"
+    )
+
+
+def test_a_merge_is_refused_when_someone_moved_the_branch_after_approval(
+    rsa_key: tuple[str, Any]
+) -> None:
+    # GitHub answers with a conflict when the branch no longer points at the named commit.
+    api = RecordingAPI(git_data_handler(branch_head_now="somebody-elses-commit"))
+
+    with pytest.raises(PublishFailed) as failure:
+        app_client(api, rsa_key).merge_pr(17, "Update onboarding", "approvedsha")
+
+    message = failure.value.user_message
+    assert "approved" in message.lower()
+    assert "nothing was published" in message.lower()
+    assert_plain_english(message)
+    assert api.count("/merge") == 1, "a refused merge is never retried"
+
+
+def test_the_same_merge_goes_through_when_the_branch_has_not_moved(
+    rsa_key: tuple[str, Any]
+) -> None:
+    api = RecordingAPI(git_data_handler(branch_head_now="approvedsha"))
+    sha = app_client(api, rsa_key).merge_pr(17, "Update onboarding", "approvedsha")
+    assert sha == "mergesha"
+
+
+def test_an_ordinary_clash_is_not_reported_as_someone_editing_the_change(
+    rsa_key: tuple[str, Any]
+) -> None:
+    """A conflict that is not about the branch moving must not blame the approver."""
+    api = RecordingAPI(git_data_handler(merge_status=409, merge_message="Merge conflict"))
+
+    with pytest.raises(PublishFailed) as failure:
+        app_client(api, rsa_key).merge_pr(17, "Update onboarding", "approvedsha")
+
+    message = failure.value.user_message
+    assert "approved" not in message.lower()
+    assert_plain_english(message)
+
+
+def test_a_merge_without_the_approved_commit_never_reaches_github(
+    rsa_key: tuple[str, Any]
+) -> None:
+    api = RecordingAPI(git_data_handler())
+    client = app_client(api, rsa_key)
+
+    for missing in ["", "   "]:
+        with pytest.raises(PublishFailed) as failure:
+            client.merge_pr(17, "Update onboarding", missing)
+        assert_plain_english(failure.value.user_message)
+
+    assert api.count("/merge") == 0, (
+        "without the approved commit there is nothing to pin the merge to, so nothing "
+        "is sent at all"
+    )
+
+
+# ---------------------------------------------------------------------------
+# a write straight into the shared library reaches nobody
+# ---------------------------------------------------------------------------
+
+
+def test_the_real_client_refuses_to_commit_onto_the_shared_branch(
+    rsa_key: tuple[str, Any]
+) -> None:
+    api = RecordingAPI(git_data_handler())
+    client = app_client(api, rsa_key, default_branch="main")
+
+    with pytest.raises(PublishFailed) as failure:
+        client.commit_files(
+            "main",
+            {"plugins/p/skills/onboarding/SKILL.md": "new body"},
+            "Update the onboarding skill",
+            "Ellie Ward",
+            "ellie@example.com",
+        )
+
+    assert_plain_english(failure.value.user_message)
+    assert not any(
+        method in {"POST", "PATCH"} for method, _ in api.calls()
+    ), "nothing at all may be written when the target is the shared branch"
+
+
+def test_the_shared_branch_refusal_cannot_be_dodged_by_spelling_it_differently(
+    rsa_key: tuple[str, Any]
+) -> None:
+    api = RecordingAPI(git_data_handler())
+    client = app_client(api, rsa_key, default_branch="main")
+
+    for spelling in ["main", " main ", "refs/heads/main", "Main", "MAIN"]:
+        with pytest.raises(PublishFailed) as failure:
+            client.commit_files(spelling, {"a/SKILL.md": "x"}, "Update", "Ellie", "e@example.com")
+        assert_plain_english(failure.value.user_message)
+
+    assert not any(method in {"POST", "PATCH"} for method, _ in api.calls())
+
+
+def test_the_shared_branch_is_whichever_one_this_library_uses(rsa_key: tuple[str, Any]) -> None:
+    """Nothing here assumes the shared branch is called main."""
+    api = RecordingAPI(git_data_handler())
+    client = app_client(api, rsa_key, default_branch="trunk")
+
+    with pytest.raises(PublishFailed) as failure:
+        client.commit_files("trunk", {"a/SKILL.md": "x"}, "Update", "Ellie", "e@example.com")
+    assert_plain_english(failure.value.user_message)
+
+    # A branch called main is an ordinary working branch for this library, so it is allowed.
+    assert client.commit_files(
+        "main", {"a/SKILL.md": "x"}, "Update", "Ellie", "e@example.com"
+    ) == "newcommitsha"
+
+
+def test_the_development_client_refuses_the_shared_branch_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIBRARIAN_DEV_TOKEN", "dev-token-value")
+    api = RecordingAPI(git_data_handler())
+    with pytest.warns(RuntimeWarning):
+        client = TokenClient(OWNER, REPO, http_client=api.client())
+
+    with pytest.raises(PublishFailed) as failure:
+        client.commit_files("main", {"a/SKILL.md": "x"}, "Update", "Ellie", "e@example.com")
+
+    assert_plain_english(failure.value.user_message)
+    assert not any(method in {"POST", "PATCH"} for method, _ in api.calls())
 
 
 def test_create_branch_asks_for_the_right_reference(rsa_key: tuple[str, Any]) -> None:
@@ -679,7 +836,7 @@ def test_fake_merge_moves_the_default_branch_forward() -> None:
         "ellie@example.com",
     )
     number = gh.open_pr("librarian/onboarding-ab12", "main", "Update onboarding", "body")
-    merged = gh.merge_pr(number, "Update onboarding")
+    merged = gh.merge_pr(number, "Update onboarding", gh.get_ref_sha("librarian/onboarding-ab12"))
 
     assert gh.get_ref_sha("main") == merged
     assert merged != before
@@ -690,11 +847,34 @@ def test_fake_merge_moves_the_default_branch_forward() -> None:
 def test_fake_merging_twice_is_refused() -> None:
     gh = FakeGitHubClient()
     gh.create_branch("librarian/x", gh.get_ref_sha("main"))
-    gh.commit_files("librarian/x", {"a/SKILL.md": "x"}, "Update", "Ellie", "ellie@example.com")
+    head = gh.commit_files(
+        "librarian/x", {"a/SKILL.md": "x"}, "Update", "Ellie", "ellie@example.com"
+    )
     number = gh.open_pr("librarian/x", "main", "t", "b")
-    gh.merge_pr(number, "t")
+    gh.merge_pr(number, "t", head)
     with pytest.raises(PublishFailed):
-        gh.merge_pr(number, "t")
+        gh.merge_pr(number, "t", head)
+
+
+def test_fake_refuses_to_merge_content_that_was_never_approved() -> None:
+    """The fake has to hold the same promise as the real client, or the suite proves nothing."""
+    gh = FakeGitHubClient()
+    gh.create_branch("librarian/x", gh.get_ref_sha("main"))
+    approved = gh.commit_files(
+        "librarian/x", {"a/SKILL.md": "approved"}, "Update", "Ellie", "ellie@example.com"
+    )
+    number = gh.open_pr("librarian/x", "main", "t", "b")
+
+    # Somebody with write access adds another commit to the branch after the approval.
+    gh.commit_files(
+        "librarian/x", {"a/SKILL.md": "sneaked in"}, "Extra", "Someone Else", "else@example.com"
+    )
+
+    with pytest.raises(PublishFailed) as failure:
+        gh.merge_pr(number, "t", approved)
+
+    assert_plain_english(failure.value.user_message)
+    assert gh.files_on("main").get("a/SKILL.md") is None, "nothing may reach the shared library"
 
 
 def test_fake_reads_files_and_folders_back() -> None:
@@ -724,14 +904,14 @@ def test_fake_history_lists_only_commits_touching_the_file() -> None:
     gh = FakeGitHubClient()
     gh.seed({"plugins/p/skills/onboarding/SKILL.md": "one"})
     gh.create_branch("librarian/x", gh.get_ref_sha("main"))
-    gh.commit_files(
+    head = gh.commit_files(
         "librarian/x",
         {"plugins/p/skills/onboarding/SKILL.md": "two"},
         "Second change",
         "Ellie Ward",
         "ellie@example.com",
     )
-    gh.merge_pr(gh.open_pr("librarian/x", "main", "t", "b"), "Second change")
+    gh.merge_pr(gh.open_pr("librarian/x", "main", "t", "b"), "Second change", head)
 
     history = gh.list_commits("plugins/p/skills/onboarding/SKILL.md", 10)
     assert len(history) >= 2
