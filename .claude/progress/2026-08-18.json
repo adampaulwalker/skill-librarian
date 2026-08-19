@@ -1,137 +1,9 @@
 {
   "project": "skill-librarian",
   "date": "2026-08-18",
-  "updated_at": "2026-08-19T01:37:53Z",
-  "summary": "## Session Summary - 2026-08-18\n\n**Project:** skill-librarian\n**Time:** 15:58:08 - 21:37:43\n**Total Actions:** 515\n\n### Activity Breakdown\n- Edits: 62\n- Writes: 2\n- Reads: 31\n- Commands: 383\n\n### Files Touched (0\n0)\n- ",
+  "updated_at": "2026-08-19T02:21:16Z",
+  "summary": "## Session Summary - 2026-08-18\n\n**Project:** skill-librarian\n**Time:** 15:58:08 - 22:21:06\n**Total Actions:** 531\n\n### Activity Breakdown\n- Edits: 62\n- Writes: 2\n- Reads: 31\n- Commands: 399\n\n### Files Touched (0\n0)\n- ",
   "recent_activities": [
-    {
-      "timestamp": "2026-08-19T00:22:38Z",
-      "time_local": "20:22:38",
-      "tool": "Edit",
-      "file_path": "tests/fakes.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "ce5188c5a4a9848f640588a68235aae985a549496c534cff39628ecd544cd234"
-    },
-    {
-      "timestamp": "2026-08-19T00:22:46Z",
-      "time_local": "20:22:46",
-      "tool": "Edit",
-      "file_path": "tests/fakes.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "e6a5dc554ada8fc6d403e20950a85585eb4c2439d58f2b1f60c0908978562cb2"
-    },
-    {
-      "timestamp": "2026-08-19T00:23:07Z",
-      "time_local": "20:23:07",
-      "tool": "Edit",
-      "file_path": "tests/fakes.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "1adc2424370384f8a35b9b1a048930bbffc575d8e33d649bbadbc2addaada176"
-    },
-    {
-      "timestamp": "2026-08-19T00:23:14Z",
-      "time_local": "20:23:14",
-      "tool": "Bash",
-      "command": "uv run pytest -q 2>&1 | tail -20",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "271041fba13bbb909529dabe62e18c076da694165481884529dac4626eaac28e"
-    },
-    {
-      "timestamp": "2026-08-19T00:23:23Z",
-      "time_local": "20:23:23",
-      "tool": "Edit",
-      "file_path": "tests/test_fake_conformance.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "d7557954b69ffc5880c201bc8a5749c3c1b3e6a46a42e2b6d5aaeab24e11f2cf"
-    },
-    {
-      "timestamp": "2026-08-19T00:23:30Z",
-      "time_local": "20:23:30",
-      "tool": "Bash",
-      "command": "uv run pytest -q 2>&1 | tail -8",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "0611bccfc113025e6e827b0f66be60ee6b2684e2ed1c5fb15333864172a187bf"
-    },
-    {
-      "timestamp": "2026-08-19T00:23:38Z",
-      "time_local": "20:23:38",
-      "tool": "Bash",
-      "command": "sed -n '1,90p' tests/test_service.py; echo ...; grep -n \"^ALPHA\\|^BETA\\|^BRIEFS\\|^UPDATED_BRIEFS\\|^A_PERSON\\|^def version_of\\|^def entry_named\\|^ALPHA_MANIFEST\\|^BETA_MANIFEST\\|^MARKETPLACE\" tests/tes...",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "14289266c1843d5db96649e81e3823183ee54dad3208578aee135e210849786e"
-    },
-    {
-      "timestamp": "2026-08-19T00:23:49Z",
-      "time_local": "20:23:49",
-      "tool": "Bash",
-      "command": "sed -n '1,60p' tests/test_github.py; echo ---; sed -n '1000,1060p' tests/test_github.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "20abcadf2b5f0b6e6d64c718078a3be8ec884a86e3ede2dd21ffb852f3e48423"
-    },
-    {
-      "timestamp": "2026-08-19T00:24:25Z",
-      "time_local": "20:24:25",
-      "tool": "Bash",
-      "command": "cat >> /Users/adam/code/skill-librarian/tests/test_github.py <<'PY'\n\n\n# ---------------------------------------------------------------------------\n# what the fake does when two people changed the sam...",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "23052d14629033e5302007a452a129aed475588ff23157d55dc283e3b68a7b21"
-    },
-    {
-      "timestamp": "2026-08-19T00:27:45Z",
-      "time_local": "20:27:45",
-      "tool": "Read",
-      "file_path": "SPEC.md",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "da20a6aeeaa22fad1e13a2b28d1e4fa07f26e0bd22183bb3eaa759b2d7f90482"
-    },
-    {
-      "timestamp": "2026-08-19T00:27:45Z",
-      "time_local": "20:27:45",
-      "tool": "Bash",
-      "command": "ls -la && echo \"---GIT---\" && git status 2>&1 | head -5",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "8c3e85a059f3bdc8eb05ac8134a6ffd1fe37f83d6c40e132f0bd4aebd0445478"
-    },
-    {
-      "timestamp": "2026-08-19T00:27:48Z",
-      "time_local": "20:27:48",
-      "tool": "Bash",
-      "command": "find . -type f -name '*.py' -not -path './.venv/*' -not -path './.git/*' | sort && echo \"---STATUS---\" && git status --short && echo \"---DIFFSTAT---\" && git diff --stat",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "630bf312a5f405731374d839713680ae99de76c602e241c4a284bf5ca5113e5e"
-    },
-    {
-      "timestamp": "2026-08-19T00:27:50Z",
-      "time_local": "20:27:50",
-      "tool": "Bash",
-      "command": "cat src/librarian/publisher.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "d99bc81792b86bd227dc5163192d6772047e70bde8df2e57fb57dfbe8c88c824"
-    },
-    {
-      "timestamp": "2026-08-19T00:27:53Z",
-      "time_local": "20:27:53",
-      "tool": "Bash",
-      "command": "wc -l src/librarian/*.py tests/*.py && echo \"=== publisher.py grep for defs ===\" && grep -n \"^def \\|^class \\|^    def \" src/librarian/publisher.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "24db1e94ab771cefb4e874c310d281924b1d7827c981b6e7ef34bbadb6d281d7"
-    },
-    {
-      "timestamp": "2026-08-19T00:27:54Z",
-      "time_local": "20:27:54",
-      "tool": "Bash",
-      "command": "sed -n 86,470p src/librarian/publisher.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "483379f4e85c03bd0b9902f42e613325156da0e9a36e364466e3f45775829530"
-    },
-    {
-      "timestamp": "2026-08-19T00:27:58Z",
-      "time_local": "20:27:58",
-      "tool": "Bash",
-      "command": "sed -n 470,600p src/librarian/publisher.py; echo \"=== branch name ===\"; sed -n 1118,1150p src/librarian/publisher.py; echo \"=== MAX ATTEMPTS ===\"; grep -n \"_MAX_VERSION_ATTEMPTS\" src/librarian/publish...",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "1d60cc7ecf1cb98b9b22692bdd2130e05d84abaf195ca293c0f80bbe20423261"
-    },
     {
       "timestamp": "2026-08-19T00:28:00Z",
       "time_local": "20:28:00",
@@ -403,6 +275,134 @@
       "command": "{\"prompt\":\"Round three. Commit 04e1cfd at /Users/adam/code/skill-librarian. Review `git diff b911302..04e1cfd`. 850 tests, none deleted or weakened.\\n\\nYOUR ROUND TWO FINDINGS AND WHAT I DID\\n\\n1. CRI...",
       "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
       "_prev_hash": "d23608c67f4881cb57800009abe497d2520b7d98a0da5d0162593ef6b69ebce9"
+    },
+    {
+      "timestamp": "2026-08-19T01:55:00Z",
+      "time_local": "21:55:00",
+      "tool": "Bash",
+      "command": "cat > /Users/adam/.claude/jobs/36829747/tmp/codex-round3.txt <<'EOF'\nReview commit 04e1cfd in this repository. Run `git diff b911302..04e1cfd` and read the changed files.\n\nContext: this is a service t...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "8e7881559424d0fc2c9fa585966b47343a137f6f631d11a66aed2bb973645737"
+    },
+    {
+      "timestamp": "2026-08-19T01:55:03Z",
+      "time_local": "21:55:03",
+      "tool": "Bash",
+      "command": "tail -90 /private/tmp/claude-501/-/36829747-896a-4ac9-8766-4cfa0d477b3a/tasks/bgmf40far.output",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "ea950ed3c81617495263eb5432b8669bfca9ebf856dc909919358492edf6318a"
+    },
+    {
+      "timestamp": "2026-08-19T01:55:09Z",
+      "time_local": "21:55:09",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian && codex exec --sandbox read-only --skip-git-repo-check \"$(cat /Users/adam/.claude/jobs/36829747/tmp/codex-round3.txt)\" 2>&1 | tail -130",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "f875dbbc225e228fcea0e6faaa660f88426c83e21efce8e41f2579f18d1e50ef"
+    },
+    {
+      "timestamp": "2026-08-19T01:55:15Z",
+      "time_local": "21:55:15",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\ngrep -n \"def _three_way\" -A 18 tests/test_publisher.py | head -22\necho \"=== rebuild path in publisher ===\"\ngrep -n \"rebuild\\|_rebuild\\|working_copies\" src/librarian/publisher...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "845f8674c66368b9a16827daa1ab45df1d21a74061ddb64c6660c2a8cc6489b3"
+    },
+    {
+      "timestamp": "2026-08-19T01:55:28Z",
+      "time_local": "21:55:28",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\nuv run python - <<'PY' 2>&1 | tail -30\nimport sys; sys.path.insert(0,\"tests\")\nfrom test_publisher import (LocalFakeGitHub, starting_files, make_proposal, DEFAULT_BRANCH,\n    ...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "52e321276d78b685c34371779fabf0ed86b1d1aaf2182629eaf407868e046a33"
+    },
+    {
+      "timestamp": "2026-08-19T02:12:06Z",
+      "time_local": "22:12:06",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\nsed -n '196,275p' src/librarian/publisher.py",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "ce9b2c6445db425ff4cb4662989e60c60b8b400a804d8ff736573b1cfb7af219"
+    },
+    {
+      "timestamp": "2026-08-19T02:12:28Z",
+      "time_local": "22:12:28",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\nuv run python - <<'PY' 2>&1 | tail -30\nimport sys; sys.path.insert(0,\"tests\")\nfrom test_publisher import (LocalFakeGitHub, starting_files, make_proposal, DEFAULT_BRANCH,\n    ...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "37c1a61174abd29477b586334aaa5b571f3548d00aa4a3d782d2530a0d6868fd"
+    },
+    {
+      "timestamp": "2026-08-19T02:12:43Z",
+      "time_local": "22:12:43",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\necho \"=== people-project in tests ===\"; grep -rl \"people-project\\|people_project\" tests/ | sort\necho \"count: $(grep -rn 'people-project\\|people_project' tests/ | wc -l)\"\necho...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "1d8aa921b610a36e4403a51abc75b99f60d0d56432feae0c1c4c7104eda4ef00"
+    },
+    {
+      "timestamp": "2026-08-19T02:12:54Z",
+      "time_local": "22:12:54",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\n# Fixture data, not product code, but the instruction was to clear the customer out of the tool.\n# test_generality.py legitimately contains these strings as its denylist - le...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "615cd32851ca053b3c642d8a7ef1e13a1a1a371eed8a5c7be8d6e96e79d31dbb"
+    },
+    {
+      "timestamp": "2026-08-19T02:19:59Z",
+      "time_local": "22:19:59",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\nfor f in tests/test_github.py tests/test_publisher.py tests/test_skillfile.py tests/test_service.py tests/fakes.py; do\n  sed -i '' 's|ellie@|robin@|g; s|atlanticlabs\\.example...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "53bac7fd2f6e80dba99540ffa6a906dd146e6e6e55b04d056bd552b8c3500d95"
+    },
+    {
+      "timestamp": "2026-08-19T02:20:09Z",
+      "time_local": "22:20:09",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\nfor f in tests/test_github.py tests/test_publisher.py; do\n  sed -i '' 's|atlantic-labs|example-org|g; s|Atlantic Labs|Example Org|g; s|atlanticlabs\\.invalid|example\\.invalid|...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "69f4cdd79ad06163781ee6e442544a81877cb9a769855c2bfea77704638f906f"
+    },
+    {
+      "timestamp": "2026-08-19T02:20:15Z",
+      "time_local": "22:20:15",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\nsed -n '1,60p' tests/test_generality.py",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "90e057455447c608fefe6fb7fd8ef32d07f213cce82c5153b2c6128c179822f7"
+    },
+    {
+      "timestamp": "2026-08-19T02:20:34Z",
+      "time_local": "22:20:34",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\ncat >> tests/test_generality.py <<'EOF'\n\n\n# ==================================================================================================\n# The same tripwire, pointed at...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "75dbff0b09cb20b68b708b36bb7a847b466c506f0d41660f029b57bc22e646ff"
+    },
+    {
+      "timestamp": "2026-08-19T02:20:43Z",
+      "time_local": "22:20:43",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\n# prove the new tripwire actually fires\necho '# Jodi' >> tests/test_publisher.py\nuv run pytest tests/test_generality.py -q 2>&1 | grep -E \"passed|failed\" | tail -1\nsed -i '' ...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "f7d24d85856c11a3bab5b955f648218d70f36a7a6b417fe40e88c177d7de95a9"
+    },
+    {
+      "timestamp": "2026-08-19T02:20:51Z",
+      "time_local": "22:20:51",
+      "tool": "Bash",
+      "command": "f=/private/tmp/claude-501/-/36829747-896a-4ac9-8766-4cfa0d477b3a/tasks/b5xlniq9k.output\necho \"size: $(wc -c < $f 2>/dev/null) bytes\"; tail -60 \"$f\" 2>/dev/null",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "54591821137d9c0af6315846348b7075757938fa326a6993d3df3c1e58c5936f"
+    },
+    {
+      "timestamp": "2026-08-19T02:21:06Z",
+      "time_local": "22:21:06",
+      "tool": "Bash",
+      "command": "cd ~/code/skill-librarian\ngit add -A\ngit -c user.name=\"Adam Walker\" -c user.email=\"walk.adm@gmail.com\" commit -q -m \"Clear customer names out of the test fixtures, and widen the tripwire\n\nThe generali...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "d7e07435e8ef0be0f523dcd51a6ec1181a91a561b5ac9a478b70f00f3859eec1"
     }
   ]
 }

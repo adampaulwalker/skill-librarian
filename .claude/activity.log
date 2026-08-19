@@ -710,3 +710,18 @@ cat >> tests/test_generality.py <<'EOF'
 # prove the new tripwire actually fires
 echo '# Jodi' 
 [22:20:51] Bash: f=/private/tmp/claude-501/-/36829747-896a-4ac9-8766-4cfa0d477b3a/tasks/b5xlniq9k
+[22:21:06] Bash: cd ~/code/skill-librarian
+git add -A
+git -c user.name="Adam Walker" -c user.emai
+[23:38:41] Bash: f=/private/tmp/claude-501/-/36829747-896a-4ac9-8766-4cfa0d477b3a/tasks/b5xlniq9k
+[23:38:47] Bash: f=/Users/adam/.claude/projects/-/36829747-896a-4ac9-8766-4cfa0d477b3a/tool-resul
+[23:38:53] Bash: f=/Users/adam/.claude/projects/-/36829747-896a-4ac9-8766-4cfa0d477b3a/tool-resul
+[23:39:02] Bash: f=/Users/adam/.claude/projects/-/36829747-896a-4ac9-8766-4cfa0d477b3a/tool-resul
+[23:39:15] Bash: cd ~/code/skill-librarian && git diff b911302..dd1875f --stat | tail -3; echo "d
+[23:56:51] mcp__multi-llm__ask_model: {"prompt":"Adversarial code review of the single write path in a service that ed
+[23:57:10] Bash: cd ~/code/skill-librarian
+uv run python - <<'PY' 2>&1 | tail -30
+import sys; sys
+[23:57:21] Bash: cd ~/code/skill-librarian
+uv run python - <<'PY' 2>&1 | tail -12
+import sys; sys

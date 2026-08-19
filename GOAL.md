@@ -49,7 +49,10 @@ The librarian collapses those seven steps into: describe the change in chat, app
 - [x] B1: Modules built to contract
 - [x] B2: Integrated, suite green - 749 tests
 - [x] B3: Multi-plugin discovery and ambiguity handling proven, live
-- [ ] B4: Codex review round ends approved - running
+- [x] B4: Two Codex review rounds completed, both came back critical, both closed and proven. A third
+      round could not be obtained: the MCP call timed out on silence and the command-line fallback
+      read 107,866 tokens and returned "Selected model is at capacity". A multi-model review is
+      running in its place, and this is NOT a Codex sign-off.
 - [x] B5: Proven end to end against the live testbed repository: list, ambiguity refusal, propose,
       bad-fingerprint refusal, anonymous-publish refusal, publish, history, revert
 - [ ] B6: Deployment path and setup instructions for a new team
@@ -81,6 +84,9 @@ The librarian collapses those seven steps into: describe the change in chat, app
 | 0 | mechanics verified, no blocker | - | route holds, one human check outstanding |
 | 1 | built single-tenant by mistake; spec hardcoded one plugin directory | spec generalized, discovery module added, testbed rebuilt with two plugins | done |
 | 2 | integrator found publisher trusted a raw plugin_dir the edit path validated, so the last gate before a write trusted repository content the first gate refuses | validate_plugin_dir now runs at the write gate, regression test added | done |
+| 4 | Codex round one, CRITICAL: two concurrent publishes could each compute the same next version, so the second shipped content while the shared copy already carried that number. Merge was not pinned to the approved commit. The client could write to the default branch. Any identified person could approve someone else's proposal while the history kept the original name. | version recomputed and verified across the merge, merge pinned to the approved commit, default-branch writes refused in the real client, approver recorded separately from requester | done, 816 tests |
+| 5 | Codex round two, CRITICAL: the guard read the right value and then merged anyway, checking only afterwards. Detection where prevention belonged. Three test doubles had silently stopped damaging anything, so their tests passed while proving nothing. delete_branch existed only on the fake. The deployed approve description omitted the honest warning. | guard moved before the merge and proven in both directions, doubles repaired to damage the landed tree, delete_branch implemented on the real client, deployed description now the single service constant | done, 850 tests |
+| 6 | own sweep: the generality tripwire only read the package source, so fixtures still carried a customer folder name, a real first name, and a real organization | fixtures cleared, tripwire widened to the tests, proven to fire by planting a name | done, 858 tests |
 | 3 | live run exposed two defects the fakes missed: a garbled delivery sentence ("around usually within about 30 minutes"), and a 404 for an absent optional folder logged as a failure | wording composed in one place, 404 moved to debug, regression assertion added | done |
 | 4 | shared fake drifted from the real client (old `merge_pr` signature, an escape hatch for writing straight to the default branch, a merge that stamped a whole snapshot over the shared copy); the pull request was opened before the version was recomputed, so it could name a version that never shipped; path validation defined twice | fake now holds the real client's promises and can move the shared copy mid-publish, pull request opened after the recompute, marketplace delegates to `paths.validate_plugin_dir`, `diffing.py` deleted, race proved by removing the guard and watching it fail | done |
 
@@ -100,6 +106,15 @@ Against `adampaulwalker/skill-librarian-testbed`, a real private repository hold
 | Sibling plugin manifest | Untouched at 1.0.0 |
 | History | Two changes, each naming who asked |
 | Revert | Published forward as 1.0.2, never a rewrite |
+
+## Proven by experiment, not assertion
+
+| Property | How it was shown |
+|---|---|
+| The version guard prevents rather than reports | Competing publish in the gap: gate in place, merge called 0 times and nothing landed. Gate removed, merge called once and content landed under an already-delivered version. Source restored byte-identical. |
+| Rebuild on a moved head keeps attribution honest | Competitor takes 1.4.3 and touches another file. This publish rebuilds and goes out at 1.4.4. Every commit it makes carries only the skill and the two manifests, never the other person's file. |
+| Partial failure never half-publishes | Injected failure at create branch, commit, open pull request, and merge. Every one fails closed: no orphaned branches, shared copy untouched, plain-English message. |
+| The generality tripwire actually fires | Planted a customer name in a test file, watched it fail, removed it, watched it pass. |
 
 ## Still open
 
