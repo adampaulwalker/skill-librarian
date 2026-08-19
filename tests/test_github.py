@@ -23,7 +23,7 @@ from librarian.github import GitHubAppClient, GitHubClient, TokenClient
 
 from .fakes import FakeGitHubClient
 
-OWNER = "atlantic-labs"
+OWNER = "example-org"
 REPO = "people-skills"
 FAKE_TOKEN = "ghs_installation_token_do_not_log"
 
@@ -241,7 +241,7 @@ def test_installation_token_is_cached_between_calls(rsa_key: tuple[str, Any]) ->
 
     client.get_ref_sha("main")
     client.get_ref_sha("main")
-    client.list_commits("plugins/people-project/skills/onboarding/SKILL.md", 5)
+    client.list_commits("plugins/example-pack/skills/onboarding/SKILL.md", 5)
 
     assert api.count("/access_tokens") == 1
 
@@ -450,10 +450,10 @@ def test_list_commits_reports_who_asked(rsa_key: tuple[str, Any]) -> None:
                     {
                         "sha": "c1",
                         "commit": {
-                            "message": "Update onboarding\n\nRequested-By: Ellie Ward <ellie@example.com>",
+                            "message": "Update onboarding\n\nRequested-By: Robin Ward <robin@example.com>",
                             "author": {
-                                "name": "Ellie Ward",
-                                "email": "ellie@example.com",
+                                "name": "Robin Ward",
+                                "email": "robin@example.com",
                                 "date": "2026-08-18T10:00:00Z",
                             },
                             "committer": {"name": "Skill Librarian"},
@@ -466,7 +466,7 @@ def test_list_commits_reports_who_asked(rsa_key: tuple[str, Any]) -> None:
     api = RecordingAPI(handler)
     history = app_client(api, rsa_key).list_commits("plugins/p/skills/s/SKILL.md", 5)
 
-    assert history[0]["author_name"] == "Ellie Ward"
+    assert history[0]["author_name"] == "Robin Ward"
     assert history[0]["committer_name"] == "Skill Librarian"
 
 
@@ -552,15 +552,15 @@ def test_commit_sets_the_human_as_author_and_the_app_as_committer(
         "librarian/onboarding-ab12",
         {"plugins/p/skills/onboarding/SKILL.md": "new body"},
         "Update the onboarding skill",
-        "Ellie Ward",
-        "ellie@example.com",
+        "Robin Ward",
+        "robin@example.com",
     )
 
     assert sha == "newcommitsha"
     commit_body = api.body_for("POST", "/git/commits")
     assert commit_body["author"] == {
-        "name": "Ellie Ward",
-        "email": "ellie@example.com",
+        "name": "Robin Ward",
+        "email": "robin@example.com",
         "date": commit_body["author"]["date"],
     }
     assert commit_body["committer"]["name"] == "Skill Librarian"
@@ -574,13 +574,13 @@ def test_commit_message_carries_the_requested_by_trailer(rsa_key: tuple[str, Any
         "librarian/onboarding-ab12",
         {"plugins/p/skills/onboarding/SKILL.md": "new body"},
         "Update the onboarding skill",
-        "Ellie Ward",
-        "ellie@example.com",
+        "Robin Ward",
+        "robin@example.com",
     )
 
     message = api.body_for("POST", "/git/commits")["message"]
     assert message.startswith("Update the onboarding skill")
-    assert "Requested-By: Ellie Ward <ellie@example.com>" in message.splitlines()
+    assert "Requested-By: Robin Ward <robin@example.com>" in message.splitlines()
 
 
 def test_commit_uses_the_git_data_endpoints_not_the_contents_endpoint(
@@ -591,8 +591,8 @@ def test_commit_uses_the_git_data_endpoints_not_the_contents_endpoint(
         "librarian/onboarding-ab12",
         {"a/SKILL.md": "one", "a/reference/notes.md": "two"},
         "Update two files",
-        "Ellie Ward",
-        "ellie@example.com",
+        "Robin Ward",
+        "robin@example.com",
     )
 
     written = [call for call in api.calls() if call[0] in {"POST", "PATCH"}]
@@ -615,8 +615,8 @@ def test_the_branch_ref_is_moved_forward_and_never_forced(rsa_key: tuple[str, An
         "librarian/onboarding-ab12",
         {"a/SKILL.md": "one"},
         "Update",
-        "Ellie Ward",
-        "ellie@example.com",
+        "Robin Ward",
+        "robin@example.com",
     )
 
     ref_body = api.body_for("PATCH", "/git/refs/heads/")
@@ -628,7 +628,7 @@ def test_a_commit_without_a_named_human_is_refused(rsa_key: tuple[str, Any]) -> 
     api = RecordingAPI(git_data_handler())
     client = app_client(api, rsa_key)
 
-    for name, email in [("", "ellie@example.com"), ("Ellie Ward", ""), ("Ellie Ward", "nope")]:
+    for name, email in [("", "robin@example.com"), ("Robin Ward", ""), ("Robin Ward", "nope")]:
         with pytest.raises(LibrarianError) as failure:
             client.commit_files("branch", {"a/SKILL.md": "x"}, "Update", name, email)
         assert_plain_english(failure.value.user_message)
@@ -642,22 +642,22 @@ def test_a_name_cannot_smuggle_extra_lines_into_the_commit(rsa_key: tuple[str, A
             "branch",
             {"a/SKILL.md": "x"},
             "Update",
-            "Ellie\nRequested-By: Someone Else <boss@example.com>",
-            "ellie@example.com",
+            "Robin\nRequested-By: Someone Else <boss@example.com>",
+            "robin@example.com",
         )
 
 
 def test_committing_nothing_is_refused(rsa_key: tuple[str, Any]) -> None:
     api = RecordingAPI(git_data_handler())
     with pytest.raises(PublishFailed) as failure:
-        app_client(api, rsa_key).commit_files("branch", {}, "Update", "Ellie", "e@example.com")
+        app_client(api, rsa_key).commit_files("branch", {}, "Update", "Robin", "e@example.com")
     assert_plain_english(failure.value.user_message)
 
 
 def test_open_pr_returns_the_number(rsa_key: tuple[str, Any]) -> None:
     api = RecordingAPI(git_data_handler())
     number = app_client(api, rsa_key).open_pr(
-        "librarian/onboarding-ab12", "main", "Update onboarding", "Ellie asked for this."
+        "librarian/onboarding-ab12", "main", "Update onboarding", "Robin asked for this."
     )
     assert number == 17
     body = api.body_for("POST", "/pulls")
@@ -782,8 +782,8 @@ def test_the_real_client_refuses_to_commit_onto_the_shared_branch(
             "main",
             {"plugins/p/skills/onboarding/SKILL.md": "new body"},
             "Update the onboarding skill",
-            "Ellie Ward",
-            "ellie@example.com",
+            "Robin Ward",
+            "robin@example.com",
         )
 
     assert_plain_english(failure.value.user_message)
@@ -800,7 +800,7 @@ def test_the_shared_branch_refusal_cannot_be_dodged_by_spelling_it_differently(
 
     for spelling in ["main", " main ", "refs/heads/main", "Main", "MAIN"]:
         with pytest.raises(PublishFailed) as failure:
-            client.commit_files(spelling, {"a/SKILL.md": "x"}, "Update", "Ellie", "e@example.com")
+            client.commit_files(spelling, {"a/SKILL.md": "x"}, "Update", "Robin", "e@example.com")
         assert_plain_english(failure.value.user_message)
 
     assert not any(method in {"POST", "PATCH"} for method, _ in api.calls())
@@ -812,12 +812,12 @@ def test_the_shared_branch_is_whichever_one_this_library_uses(rsa_key: tuple[str
     client = app_client(api, rsa_key, default_branch="trunk")
 
     with pytest.raises(PublishFailed) as failure:
-        client.commit_files("trunk", {"a/SKILL.md": "x"}, "Update", "Ellie", "e@example.com")
+        client.commit_files("trunk", {"a/SKILL.md": "x"}, "Update", "Robin", "e@example.com")
     assert_plain_english(failure.value.user_message)
 
     # A branch called main is an ordinary working branch for this library, so it is allowed.
     assert client.commit_files(
-        "main", {"a/SKILL.md": "x"}, "Update", "Ellie", "e@example.com"
+        "main", {"a/SKILL.md": "x"}, "Update", "Robin", "e@example.com"
     ) == "newcommitsha"
 
 
@@ -830,7 +830,7 @@ def test_the_development_client_refuses_the_shared_branch_too(
         client = TokenClient(OWNER, REPO, http_client=api.client())
 
     with pytest.raises(PublishFailed) as failure:
-        client.commit_files("main", {"a/SKILL.md": "x"}, "Update", "Ellie", "e@example.com")
+        client.commit_files("main", {"a/SKILL.md": "x"}, "Update", "Robin", "e@example.com")
 
     assert_plain_english(failure.value.user_message)
     assert not any(method in {"POST", "PATCH"} for method, _ in api.calls())
@@ -993,21 +993,21 @@ def test_fake_records_the_human_as_author_and_the_app_as_committer() -> None:
         "librarian/onboarding-ab12",
         {"plugins/p/skills/onboarding/SKILL.md": "new"},
         "Update onboarding",
-        "Ellie Ward",
-        "ellie@example.com",
+        "Robin Ward",
+        "robin@example.com",
     )
 
     commit = gh.commits[sha]
-    assert commit.author_name == "Ellie Ward"
-    assert commit.author_email == "ellie@example.com"
+    assert commit.author_name == "Robin Ward"
+    assert commit.author_email == "robin@example.com"
     assert commit.committer_name == "Skill Librarian"
-    assert "Requested-By: Ellie Ward <ellie@example.com>" in commit.message.splitlines()
+    assert "Requested-By: Robin Ward <robin@example.com>" in commit.message.splitlines()
 
 
 def test_fake_refuses_a_commit_straight_to_the_default_branch() -> None:
     gh = FakeGitHubClient()
     with pytest.raises(PublishFailed):
-        gh.commit_files("main", {"a/SKILL.md": "x"}, "Update", "Ellie", "ellie@example.com")
+        gh.commit_files("main", {"a/SKILL.md": "x"}, "Update", "Robin", "robin@example.com")
 
 
 def test_fake_merge_moves_the_default_branch_forward() -> None:
@@ -1019,8 +1019,8 @@ def test_fake_merge_moves_the_default_branch_forward() -> None:
         "librarian/onboarding-ab12",
         {"plugins/p/skills/onboarding/SKILL.md": "new"},
         "Update onboarding",
-        "Ellie Ward",
-        "ellie@example.com",
+        "Robin Ward",
+        "robin@example.com",
     )
     number = gh.open_pr("librarian/onboarding-ab12", "main", "Update onboarding", "body")
     merged = gh.merge_pr(number, "Update onboarding", gh.get_ref_sha("librarian/onboarding-ab12"))
@@ -1035,7 +1035,7 @@ def test_fake_merging_twice_is_refused() -> None:
     gh = FakeGitHubClient()
     gh.create_branch("librarian/x", gh.get_ref_sha("main"))
     head = gh.commit_files(
-        "librarian/x", {"a/SKILL.md": "x"}, "Update", "Ellie", "ellie@example.com"
+        "librarian/x", {"a/SKILL.md": "x"}, "Update", "Robin", "robin@example.com"
     )
     number = gh.open_pr("librarian/x", "main", "t", "b")
     gh.merge_pr(number, "t", head)
@@ -1048,7 +1048,7 @@ def test_fake_refuses_to_merge_content_that_was_never_approved() -> None:
     gh = FakeGitHubClient()
     gh.create_branch("librarian/x", gh.get_ref_sha("main"))
     approved = gh.commit_files(
-        "librarian/x", {"a/SKILL.md": "approved"}, "Update", "Ellie", "ellie@example.com"
+        "librarian/x", {"a/SKILL.md": "approved"}, "Update", "Robin", "robin@example.com"
     )
     number = gh.open_pr("librarian/x", "main", "t", "b")
 
@@ -1095,14 +1095,14 @@ def test_fake_history_lists_only_commits_touching_the_file() -> None:
         "librarian/x",
         {"plugins/p/skills/onboarding/SKILL.md": "two"},
         "Second change",
-        "Ellie Ward",
-        "ellie@example.com",
+        "Robin Ward",
+        "robin@example.com",
     )
     gh.merge_pr(gh.open_pr("librarian/x", "main", "t", "b"), "Second change", head)
 
     history = gh.list_commits("plugins/p/skills/onboarding/SKILL.md", 10)
     assert len(history) >= 2
-    assert history[0]["author_name"] == "Ellie Ward"
+    assert history[0]["author_name"] == "Robin Ward"
 
 
 def test_fake_taking_a_working_copy_away_frees_the_name_for_a_second_attempt() -> None:
@@ -1160,7 +1160,7 @@ def racing_branch(gh: FakeGitHubClient, ours: dict[str, str]) -> tuple[str, int,
     start = gh.get_ref_sha("main")
     gh.create_branch("librarian/onboarding-ab12", start)
     head = gh.commit_files(
-        "librarian/onboarding-ab12", ours, "Update onboarding", "Ellie Ward", "ellie@example.com"
+        "librarian/onboarding-ab12", ours, "Update onboarding", "Robin Ward", "robin@example.com"
     )
     number = gh.open_pr("librarian/onboarding-ab12", "main", "Update onboarding", "body")
     return "librarian/onboarding-ab12", number, head

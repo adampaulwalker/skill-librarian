@@ -120,7 +120,7 @@ def test_parse_accepts_every_allowed_setting() -> None:
         "license: MIT\n"
         "compatibility: claude-code\n"
         "metadata:\n"
-        "  owner: Ellie\n"
+        "  owner: Robin\n"
         "allowed-tools:\n"
         "  - Read\n"
         "  - Write\n"
@@ -218,7 +218,7 @@ def test_render_round_trips_a_skill_carrying_every_setting() -> None:
             "description": "Uses every setting a skill may have.",
             "license": "MIT",
             "compatibility": "claude-code",
-            "metadata": {"owner": "Ellie", "reviewed": True},
+            "metadata": {"owner": "Robin", "reviewed": True},
             "allowed-tools": ["Read", "Write"],
         },
         body="Body\n",
@@ -292,7 +292,7 @@ def test_render_refuses_a_skill_whose_name_drifted_from_its_settings() -> None:
 
 
 def test_an_unknown_setting_is_refused_and_named() -> None:
-    text = "---\ndescription: Fine.\nauthor: Ellie\n---\nBody\n"
+    text = "---\ndescription: Fine.\nauthor: Robin\n---\nBody\n"
     with pytest.raises(InvalidSkill) as caught:
         parse_skill(text)
     message = assert_reads_plainly(caught.value)

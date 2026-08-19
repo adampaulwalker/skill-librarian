@@ -170,3 +170,51 @@ def test_nothing_in_the_package_reaches_for_a_plugin_dir_setting() -> None:
                 offences.append(f"{path.relative_to(PACKAGE_ROOT)}:{number}: {line.strip()}")
 
     assert not offences, "the settings no longer carry a plugin_dir:\n" + "\n".join(offences)
+
+
+# ==================================================================================================
+# The same tripwire, pointed at the tests
+# ==================================================================================================
+
+TESTS_ROOT = pathlib.Path(__file__).resolve().parent
+
+
+def test_files() -> list[pathlib.Path]:
+    """Every test file except this one, which has to contain the names to check for them."""
+    return sorted(
+        path
+        for path in TESTS_ROOT.rglob("*.py")
+        if "__pycache__" not in path.parts and path.name != pathlib.Path(__file__).name
+    )
+
+
+def test_the_test_files_are_actually_being_read() -> None:
+    """The same trap as above. A sweep that reads nothing passes forever and proves nothing."""
+    files = test_files()
+
+    assert len(files) >= 5, f"expected the test suite under {TESTS_ROOT}, found {files}"
+    assert any(path.name == "test_publisher.py" for path in files)
+
+
+@pytest.mark.parametrize("forbidden", FORBIDDEN_NAMES)
+def test_no_customer_or_personal_name_is_used_as_test_data(forbidden: str) -> None:
+    """Fixtures drift too, and a fixture is where the first one got in.
+
+    The package source was swept from the start and the tests were not, so example data kept
+    a customer's folder name and a real person's first name long after the code was clean.
+    Nothing ships from here, so this is tidiness rather than a defect, but a suite full of one
+    customer's vocabulary is how the next person learns the wrong shape of this thing.
+    """
+    pattern = re.compile(re.escape(forbidden), re.IGNORECASE)
+
+    offenders = [
+        f"{path.relative_to(TESTS_ROOT)}:{number}"
+        for path in test_files()
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if pattern.search(line)
+    ]
+
+    assert not offenders, (
+        f"{forbidden!r} is used as test data in: {', '.join(offenders)}. "
+        "Use a neutral example instead, so the suite does not read as one customer's tool."
+    )

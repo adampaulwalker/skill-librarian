@@ -19,7 +19,7 @@ from librarian.errors import PublishFailed, UnsafePath
 from librarian.proposals import Proposal
 from librarian.publisher import publish
 
-PLUGIN_DIR = "plugins/people-project"
+PLUGIN_DIR = "plugins/example-pack"
 PLUGIN_MANIFEST = f"{PLUGIN_DIR}/.claude-plugin/plugin.json"
 MARKETPLACE_MANIFEST = ".claude-plugin/marketplace.json"
 SKILL_NAME = "how-we-write-briefs"
@@ -53,7 +53,7 @@ class LocalFakeGitHub:
     """
 
     app_name = "Skill Librarian"
-    app_email = "librarian@atlanticlabs.invalid"
+    app_email = "librarian@example.invalid"
 
     def __init__(self, files: dict[str, str], default_branch: str = DEFAULT_BRANCH) -> None:
         self.default_branch = default_branch
@@ -319,7 +319,7 @@ def plugin_manifest(version: str = START_VERSION) -> str:
     return (
         json.dumps(
             {
-                "name": "people-project",
+                "name": "example-pack",
                 "description": "Shared skills for the people team.",
                 "version": version,
             },
@@ -333,12 +333,12 @@ def marketplace_manifest(version: str = START_VERSION) -> str:
     return (
         json.dumps(
             {
-                "name": "atlantic-labs",
-                "owner": {"name": "Atlantic Labs"},
+                "name": "example-org",
+                "owner": {"name": "Example Org"},
                 "plugins": [
                     {
-                        "name": "people-project",
-                        "source": "./plugins/people-project",
+                        "name": "example-pack",
+                        "source": "./plugins/example-pack",
                         "version": version,
                     }
                 ],
@@ -360,7 +360,7 @@ def starting_files(version: str = START_VERSION) -> dict[str, str]:
 @pytest.fixture
 def cfg() -> Config:
     return Config(
-        repo_owner="atlantic-labs",
+        repo_owner="example-org",
         repo_name="claude-skills",
         default_branch=DEFAULT_BRANCH,
     )
@@ -374,7 +374,7 @@ def client() -> Any:
 def make_proposal(
     files: dict[str, str] | None = None,
     base_sha: str = "sha-0",
-    requested_by: str = "Ellie Chen <ellie@atlanticlabs.example>",
+    requested_by: str = "Robin Chen <robin@example.com>",
 ) -> Proposal:
     payload = {SKILL_FILE: UPDATED_SKILL} if files is None else files
     return Proposal(
@@ -476,7 +476,7 @@ def test_manifests_stay_readable_two_space_indent_and_trailing_newline(
 
 def test_a_marketplace_entry_that_is_missing_stops_the_publish(cfg: Config) -> None:
     files = starting_files()
-    files[MARKETPLACE_MANIFEST] = json.dumps({"name": "atlantic-labs", "plugins": []}, indent=2)
+    files[MARKETPLACE_MANIFEST] = json.dumps({"name": "example-org", "plugins": []}, indent=2)
     client = new_client(files)
 
     with pytest.raises(PublishFailed):
@@ -670,20 +670,20 @@ def test_a_change_with_no_files_is_refused(cfg: Config, client: Any) -> None:
 
 
 def test_the_commit_author_is_the_person_who_asked(cfg: Config, client: Any) -> None:
-    publish(client, cfg, make_proposal(requested_by="Ellie Chen <ellie@atlanticlabs.example>"))
+    publish(client, cfg, make_proposal(requested_by="Robin Chen <robin@example.com>"))
 
     commit = client.commits[0]
-    assert commit["author_name"] == "Ellie Chen"
-    assert commit["author_email"] == "ellie@atlanticlabs.example"
+    assert commit["author_name"] == "Robin Chen"
+    assert commit["author_email"] == "robin@example.com"
     assert commit["committer_name"] != commit["author_name"]
-    assert "Requested-By: Ellie Chen <ellie@atlanticlabs.example>" in commit["message"]
+    assert "Requested-By: Robin Chen <robin@example.com>" in commit["message"]
 
 
 def test_a_requester_given_as_a_bare_email_still_gets_the_credit(cfg: Config, client: Any) -> None:
-    publish(client, cfg, make_proposal(requested_by="ellie@atlanticlabs.example"))
+    publish(client, cfg, make_proposal(requested_by="robin@example.com"))
 
     commit = client.commits[0]
-    assert commit["author_email"] == "ellie@atlanticlabs.example"
+    assert commit["author_email"] == "robin@example.com"
 
 
 def test_a_publish_with_no_named_requester_is_refused(cfg: Config, client: Any) -> None:
@@ -711,7 +711,7 @@ def test_the_pull_request_states_the_change_and_names_the_version(
     assert "Asks for the client name in the first line of every brief." in body
     assert result.new_version in body
     assert SKILL_FILE in body
-    assert "Ellie Chen" in body
+    assert "Robin Chen" in body
 
 
 def test_estimated_live_by_is_the_far_edge_of_the_sync_window(

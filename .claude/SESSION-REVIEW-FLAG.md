@@ -1,7 +1,7 @@
 # Session Review Flag
 
-**Generated**: 2026-08-18 14:30
-**Session tool calls**: 25
+**Generated**: 2026-08-18 21:37
+**Session tool calls**: 515
 **Action**: Run `session review` or `review my sessions` for full analysis.
 
 ## Findings
@@ -9,10 +9,17 @@
 ### Repeated File Reads
 These files were read 3+ times - consider adding their context to CLAUDE.md:
 ```
-   5 "file_path":"SPEC.md"
+  21 "file_path":"src/librarian/publisher.py"
+  17 "file_path":"tests/fakes.py"
+  17 "file_path":"src/librarian/github.py"
+  13 "file_path":"SPEC.md"
+  11 "file_path":"tests/test_github.py"
 ```
 
-### Bash Used for Search/Read (6 times)
+### Long Session (515 tool calls)
+This session was unusually long. Consider whether the workflow could be a skill.
+
+### Bash Used for Search/Read (100 times)
 Bash was used for grep/find/cat instead of dedicated tools. Could indicate missing MCP or skill.
 
 ---
