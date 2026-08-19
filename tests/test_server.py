@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from librarian import service
 from librarian.config import Config
 from librarian.errors import LibrarianError
 from librarian.proposals import ProposalStore
@@ -324,3 +325,98 @@ def test_the_store_of_drafts_uses_the_time_to_live_from_the_settings() -> None:
     )
 
     assert store.ttl_seconds == 120
+
+
+# ==============================================================================================
+# What the tool list actually tells a host, which is the only version anybody reads
+# ==============================================================================================
+#
+# These go over the wire on purpose. The warning about what the two references prove lives
+# in service.APPROVE_TOOL_DESCRIPTION, and a test that reads that constant passes happily
+# while the connector hands hosts a shorter retelling with the warning cut out. That is
+# exactly what happened, so everything below asks the running server what it publishes.
+
+
+def tools_offered(client: TestClient) -> dict[str, dict[str, Any]]:
+    """The tool list exactly as a host receives it."""
+    response = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    )
+    assert response.status_code == 200
+    return {tool["name"]: tool for tool in response.json()["result"]["tools"]}
+
+
+def test_the_approve_tool_that_is_published_says_the_two_references_are_not_an_approval(
+    client: TestClient,
+) -> None:
+    """A host that believes the fingerprint is the approval will publish with nobody there."""
+    description = tools_offered(client)["approve"]["description"].lower()
+
+    assert "do not prove that a person agreed" in description
+    assert "collected outside this tool" in description
+    assert "said yes to it in their own words" in description
+
+
+def test_the_published_approve_tool_is_word_for_word_the_one_the_service_owns(
+    client: TestClient,
+) -> None:
+    """One wording, in one place. A second copy is a copy that goes stale."""
+    assert tools_offered(client)["approve"]["description"] == service.APPROVE_TOOL_DESCRIPTION
+
+
+def published_wording(tool: dict[str, Any]) -> list[str]:
+    """Every piece of writing a host reads for one tool, including the ones on arguments."""
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "description" and isinstance(item, str):
+                    found.append(item)
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(tool)
+    return found
+
+
+def test_nothing_else_the_server_publishes_retells_the_approval_wording(
+    client: TestClient,
+) -> None:
+    """A shorter retelling anywhere in the list is the same failure in a new place.
+
+    The rule is narrow on purpose: apart from the one authoritative wording, nothing the
+    server publishes may tell a host what the two references mean for publishing. A
+    passing mention of one reference is allowed, and so is telling a host to get a yes.
+    Putting the two together is how the softened retelling gets written every time.
+    """
+    references = ("proposal_id", "diff_hash", "fingerprint")
+    publishing = ("approv", "publish", "go ahead", "says yes", "said yes")
+
+    for name, tool in tools_offered(client).items():
+        for wording in published_wording(tool):
+            if name == "approve" and wording == service.APPROVE_TOOL_DESCRIPTION:
+                continue
+            spoken = wording.lower()
+            names_a_reference = any(word in spoken for word in references)
+            talks_about_publishing = any(word in spoken for word in publishing)
+            assert not (names_a_reference and talks_about_publishing), (
+                f"the {name} tool tells a host what the references mean for publishing, "
+                "in wording other than the one the service owns"
+            )
+
+
+def test_the_connector_repeats_the_same_warning_when_it_introduces_itself(
+    client: TestClient,
+) -> None:
+    """The introduction is read before any tool is, so it must not soften the warning."""
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    )
+
+    instructions = response.json()["result"]["instructions"]
+    assert service.APPROVE_TOOL_DESCRIPTION in instructions

@@ -40,8 +40,16 @@ class LocalFakeGitHub:
     """An in memory stand in for the real repository.
 
     It records everything it is asked to do so a test can prove what did and did not happen. It is
-    deliberately permissive: it will happily commit straight to the shared branch if asked, because
-    the test needs to prove that the publisher never asks.
+    deliberately permissive about one thing only: it will happily commit straight to the shared
+    branch if asked, because the test needs to prove that the publisher never asks.
+
+    It is not permissive about merging. A merge here is worked out from the point the working copy
+    was cut, exactly as a real merge is, because a stand-in that lays a working copy over whatever
+    the shared copy holds by then makes every race look mergeable. That is what hid the bug this
+    file exists to catch: two publishes settling on the same version number write byte for byte the
+    same settings files, so a real merge really does go through without complaint, and the version
+    number people see never moves. A stand-in that also merges cleanly when the two sides disagree
+    would let a publisher get away with something GitHub would have refused.
     """
 
     app_name = "Skill Librarian"
@@ -58,9 +66,14 @@ class LocalFakeGitHub:
         self.merged: list[int] = []
         self.merge_calls: list[dict[str, Any]] = []
         self.deleted_branches: list[str] = []
-        # What each working copy has actually changed, so a merge carries those files across
-        # instead of stamping a whole snapshot over whatever else arrived in the meantime.
+        # What each working copy has actually saved. Kept as a record of what a test wrote; the
+        # merge itself is worked out from the starting point below rather than from this, so a
+        # merge here is never cleaner than a real one would be.
         self.branch_changes: dict[str, dict[str, str]] = {}
+        # Where each working copy was cut from. This is the point a merge is measured against,
+        # which is what turns two people changing the same file into a clash rather than an
+        # overlay that quietly throws one of them away.
+        self.branch_base: dict[str, str] = {default_branch: "sha-0"}
         self.calls: list[tuple[str, Any]] = []
         self.fail_on: set[str] = set()
         self._counter = 0
@@ -146,6 +159,7 @@ class LocalFakeGitHub:
             raise ValueError(f"branch {name} already exists")
         self.branches[name] = from_sha
         self.branch_history.setdefault(name, []).append(from_sha)
+        self.branch_base[name] = from_sha
         self.created_branches.append((name, from_sha))
 
     def commit_files(
@@ -212,8 +226,14 @@ class LocalFakeGitHub:
         if self.branches[head] != expected_head_sha:
             raise ValueError("the working copy moved after the change was agreed to")
         base = pull_request["base"]
+        carried, clashes = self._three_way(head, self.branches[base])
+        if clashes:
+            raise ValueError(
+                "these files were changed on both sides since this working copy was cut, so "
+                f"the merge does not go through on its own: {clashes}"
+            )
         tree = dict(self.trees[self.branches[base]])
-        tree.update(self.branch_changes.get(head, {}))
+        tree.update(carried)
         sha = self._next_sha("merge")
         self.trees[sha] = tree
         self._move(base, sha)
@@ -227,12 +247,44 @@ class LocalFakeGitHub:
             raise ValueError("the shared copy is never removed")
         self.branches.pop(name, None)
         self.branch_changes.pop(name, None)
+        self.branch_base.pop(name, None)
         self.deleted_branches.append(name)
 
     def list_commits(self, path: str, limit: int) -> list[dict[str, Any]]:
         self.calls.append(("list_commits", (path, limit)))
         touching = [c for c in self.commits if path in c["files"]]
         return list(reversed(touching))[:limit]
+
+    # Working out a merge the way a merge really works
+
+    def _three_way(
+        self, head: str, shared_sha: str
+    ) -> tuple[dict[str, str], list[str]]:
+        """What a merge carries across, and what it cannot sort out on its own.
+
+        Measured from the point the working copy was cut, because that is what a merge is. A
+        file only clashes when both sides moved it away from that starting point and disagree
+        about where it ended up. Both sides writing the very same text is not a clash, and
+        saying otherwise here would hide the one race that matters: two publishes settling on
+        the same version number write identical settings files, merge without complaint, and
+        leave the version number people see exactly where it already was.
+        """
+        start = self.branch_base.get(head)
+        if start is None or start not in self.trees:
+            raise ValueError(f"no record of where {head} was cut from")
+        started_from = self.trees[start]
+        working_copy = self.trees[self.branches[head]]
+        shared = self.trees[shared_sha]
+
+        carried = {
+            path: text for path, text in working_copy.items() if started_from.get(path) != text
+        }
+        clashes = sorted(
+            path
+            for path, text in carried.items()
+            if shared.get(path) != started_from.get(path) and shared.get(path) != text
+        )
+        return carried, clashes
 
 
 try:  # another agent may provide a shared fake; use it only if it behaves the way these tests need
@@ -817,14 +869,15 @@ class ForgetfulMergeFakeGitHub(LocalFakeGitHub):
     """
 
     def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str:
-        head = self.pull_requests[number - 1]["head"]
-        carried = self.branch_changes.get(head, {})
-        self.branch_changes[head] = {
-            path: text
-            for path, text in carried.items()
-            if path not in (PLUGIN_MANIFEST, MARKETPLACE_MANIFEST)
-        }
-        return super().merge_pr(number, commit_title, expected_head_sha)
+        base = self.pull_requests[number - 1]["base"]
+        before = dict(self.trees[self.branches[base]])
+        sha = super().merge_pr(number, commit_title, expected_head_sha)
+        # The wording lands and both version numbers stay where they were.
+        landed = dict(self.trees[sha])
+        for path in (PLUGIN_MANIFEST, MARKETPLACE_MANIFEST):
+            landed[path] = before[path]
+        self.trees[sha] = landed
+        return sha
 
 
 def test_a_merge_that_left_the_version_unchanged_is_reported_not_celebrated(
@@ -855,9 +908,12 @@ class LosingMergeFakeGitHub(LocalFakeGitHub):
     """A merge that reports success and carries nothing across at all."""
 
     def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str:
-        head = self.pull_requests[number - 1]["head"]
-        self.branch_changes[head] = {}
-        return super().merge_pr(number, commit_title, expected_head_sha)
+        base = self.pull_requests[number - 1]["base"]
+        before = dict(self.trees[self.branches[base]])
+        sha = super().merge_pr(number, commit_title, expected_head_sha)
+        # The merge reports success and carries nothing at all across.
+        self.trees[sha] = before
+        return sha
 
 
 def test_a_merge_that_carried_nothing_across_is_reported_not_celebrated(cfg: Config) -> None:
@@ -1041,3 +1097,246 @@ def test_an_unreadable_shared_copy_just_before_merging_stops_rather_than_publish
 
     message = refused.value.user_message
     assert "nothing was published" in message.lower() or "not reached" in message.lower()
+
+
+# ==============================================================================================
+# The guard that refuses before the merge
+# ==============================================================================================
+#
+# Everything in this section is about one rule: the wording never lands on the copy everyone
+# reads from unless the version number really moves forward. Noticing afterwards is not the same
+# thing. By then people who already fetched that version number are holding the old wording for
+# good, and no message can reach back and undo that. So these tests are written to fail whenever
+# a merge happens at all under a version number that did not move, however loudly the publisher
+# complains about it after the fact.
+
+
+OTHER_SKILL_FILE = f"{PLUGIN_DIR}/skills/weekly-report/SKILL.md"
+OTHER_SKILL = (
+    "---\nname: weekly-report\ndescription: How the weekly report is put together.\n---\n\n"
+    "How the weekly report gets written.\n"
+)
+
+
+class LateRacingFakeGitHub(LocalFakeGitHub):
+    """Somebody else publishes in the gap between this change being put up and being merged.
+
+    This is the exact gap the guard exists for. The other change gets all the way onto the shared
+    copy while this one is waiting, so the number this one was going to use is used up by the time
+    it would be merged.
+    """
+
+    def __init__(self, files: dict[str, str], version_that_lands: str) -> None:
+        super().__init__(files)
+        self._version_that_lands = version_that_lands
+        self.other_publish_landed = False
+
+    def open_pr(self, head: str, base: str, title: str, body: str) -> int:
+        number = super().open_pr(head, base, title, body)
+        self.simulate_someone_else_publishing(
+            {
+                PLUGIN_MANIFEST: plugin_manifest(self._version_that_lands),
+                MARKETPLACE_MANIFEST: marketplace_manifest(self._version_that_lands),
+            }
+        )
+        self.other_publish_landed = True
+        return number
+
+
+@pytest.mark.parametrize("version_that_lands", ["1.4.3", "1.5.0"])
+def test_a_change_whose_version_stopped_being_ahead_is_never_merged(
+    cfg: Config, version_that_lands: str
+) -> None:
+    """No merge happens at all. Not a merge and a complaint, no merge.
+
+    This publish works out 1.4.3 and gets as far as being put up for review. Then somebody else's
+    change lands and takes the shared copy to a number that is not behind 1.4.3 any more. Merging
+    now would put this wording on the shared copy under a number that has already gone out, so
+    everyone holding that number would keep the wording they have and never be told. The only
+    honest answer left is to refuse, and to refuse before anything is merged.
+    """
+    client = LateRacingFakeGitHub(starting_files(), version_that_lands)
+
+    with pytest.raises(PublishFailed) as refused:
+        publish(client, cfg, make_proposal())
+
+    assert client.other_publish_landed, "the race never happened, so this test proves nothing"
+
+    # The point of the whole round. Not "the merge was noticed", but "there was no merge".
+    assert client.merge_calls == [], "the merge was attempted under a version that did not move"
+    assert client.merged == []
+
+    # And so the shared copy stands exactly where the other change left it.
+    shared = client.tree_of(DEFAULT_BRANCH)
+    assert shared[SKILL_FILE] == ORIGINAL_SKILL
+    assert client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST) == version_that_lands
+    assert client.marketplace_version_on(DEFAULT_BRANCH) == version_that_lands
+
+    # The working copy is taken away, so asking for the same change again starts from nothing.
+    branch, _from_sha = client.created_branches[0]
+    assert branch not in client.branches
+
+    message = refused.value.user_message
+    assert "reach everyone" in message
+    assert "nothing has been changed" in message.lower()
+    for jargon in ("Traceback", "sha", "commit", "branch", "merge", "HTTP", "JSON"):
+        assert not re.search(rf"\b{jargon}\b", message, re.IGNORECASE)
+
+
+def test_the_working_copy_is_started_again_from_where_the_shared_copy_now_stands(
+    cfg: Config,
+) -> None:
+    """A moved shared copy is started from again, not written on top of from a stale point.
+
+    Somebody else publishes while this change is saving its work, and their change adds a whole
+    new skill as well as moving the version number. If this change simply wrote a newer version
+    number onto the copy it cut earlier, the two would each hold a different answer for the same
+    two settings files, and putting them together is the kind of clash a person has to sort out by
+    hand before anything can be merged. So the working copy is started again from where the shared
+    copy stands now, and the change that is put up for review already has the other person's work
+    in it.
+    """
+    client = RacingFakeGitHub(
+        starting_files(),
+        other_publish_files={
+            PLUGIN_MANIFEST: plugin_manifest("1.4.3"),
+            MARKETPLACE_MANIFEST: marketplace_manifest("1.4.3"),
+            OTHER_SKILL_FILE: OTHER_SKILL,
+        },
+    )
+
+    result = publish(client, cfg, make_proposal())
+
+    assert client.other_publish_landed, "the race never happened, so this test proves nothing"
+
+    head_branch = client.pull_requests[0]["head"]
+    started_from = dict(client.created_branches)[head_branch]
+    starting_point = client.trees[started_from]
+
+    # The copy this change was put up for review from already held the other person's work, so
+    # there is nothing left over for a person to sort out by hand.
+    assert starting_point[OTHER_SKILL_FILE] == OTHER_SKILL
+    assert json.loads(starting_point[PLUGIN_MANIFEST])["version"] == "1.4.3"
+    assert json.loads(starting_point[MARKETPLACE_MANIFEST])["plugins"][0]["version"] == "1.4.3"
+
+    # And both people's work is on the shared copy afterwards, under a number that moved past
+    # the one the other person delivered.
+    assert result.new_version == "1.4.4"
+    shared = client.tree_of(DEFAULT_BRANCH)
+    assert shared[SKILL_FILE] == UPDATED_SKILL
+    assert shared[OTHER_SKILL_FILE] == OTHER_SKILL
+    assert client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST) == "1.4.4"
+    assert client.marketplace_version_on(DEFAULT_BRANCH) == "1.4.4"
+
+
+class AlwaysRacingFakeGitHub(LocalFakeGitHub):
+    """Somebody else publishes every single time this change saves its work.
+
+    A library this busy could keep taking the next version number forever. Working the number out
+    again is only sensible a few times over; doing it without end against a repository that never
+    settles is a problem of its own.
+    """
+
+    def __init__(self, files: dict[str, str]) -> None:
+        super().__init__(files)
+        self.other_publishes = 0
+
+    def commit_files(
+        self,
+        branch: str,
+        files: dict[str, str],
+        message: str,
+        author_name: str,
+        author_email: str,
+    ) -> str:
+        sha = super().commit_files(branch, files, message, author_name, author_email)
+        self.other_publishes += 1
+        version = f"1.4.{2 + self.other_publishes}"
+        self.simulate_someone_else_publishing(
+            {
+                PLUGIN_MANIFEST: plugin_manifest(version),
+                MARKETPLACE_MANIFEST: marketplace_manifest(version),
+            }
+        )
+        return sha
+
+
+def test_working_the_version_out_again_gives_up_out_loud_instead_of_going_round_in_circles(
+    cfg: Config,
+) -> None:
+    """It stops after a few tries, says so plainly, and merges nothing on the way."""
+    client = AlwaysRacingFakeGitHub(starting_files())
+
+    with pytest.raises(PublishFailed) as refused:
+        publish(client, cfg, make_proposal())
+
+    assert client.other_publishes >= 2, "the race never repeated, so this test proves nothing"
+
+    # It gave up rather than trying forever.
+    assert len(client.created_branches) <= publisher._MAX_VERSION_ATTEMPTS + 1
+
+    # Nothing was merged on the way to giving up.
+    assert client.merge_calls == []
+    assert client.merged == []
+    assert client.tree_of(DEFAULT_BRANCH)[SKILL_FILE] == ORIGINAL_SKILL
+
+    message = refused.value.user_message
+    assert "try again" in message.lower()
+    assert "nothing has been changed" in message.lower()
+    for jargon in ("Traceback", "sha", "commit", "branch", "merge", "HTTP", "JSON"):
+        assert not re.search(rf"\b{jargon}\b", message, re.IGNORECASE)
+
+
+# ==============================================================================================
+# Both settings files, proved after the merge as well as before it
+# ==============================================================================================
+
+
+def test_the_library_list_on_the_shared_copy_carries_the_version_the_collection_carries(
+    cfg: Config, client: Any
+) -> None:
+    """After a publish that worked, both settings files on the shared copy say the same number."""
+    result = publish(client, cfg, make_proposal())
+
+    shared = client.tree_of(DEFAULT_BRANCH)
+    collection_version = json.loads(shared[PLUGIN_MANIFEST])["version"]
+    listed_version = json.loads(shared[MARKETPLACE_MANIFEST])["plugins"][0]["version"]
+
+    assert collection_version == listed_version == result.new_version
+
+
+class HalfMergedManifestsFakeGitHub(LocalFakeGitHub):
+    """A merge that carries the collection's own number across and leaves the library list behind.
+
+    Both files are written together, so this cannot happen by accident. It is here because the
+    check after the merge is only worth having if it looks at both of them, and a check that looks
+    at one and says both arrived is a check that proves half of what it claims.
+    """
+
+    def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str:
+        base = self.pull_requests[number - 1]["base"]
+        before = dict(self.trees[self.branches[base]])
+        sha = super().merge_pr(number, commit_title, expected_head_sha)
+        # The collection's own version moves and the library list is left behind, so the two
+        # disagree about which version is live.
+        landed = dict(self.trees[sha])
+        landed[MARKETPLACE_MANIFEST] = before[MARKETPLACE_MANIFEST]
+        self.trees[sha] = landed
+        return sha
+
+
+def test_a_merge_that_left_the_library_list_behind_is_reported_not_celebrated(
+    cfg: Config,
+) -> None:
+    client = HalfMergedManifestsFakeGitHub(starting_files())
+
+    with pytest.raises(PublishFailed) as refused:
+        publish(client, cfg, make_proposal())
+
+    # Exactly the half delivery the check after the merge is there to notice.
+    assert client.version_on(DEFAULT_BRANCH, PLUGIN_MANIFEST) != START_VERSION
+    assert client.marketplace_version_on(DEFAULT_BRANCH) == START_VERSION
+
+    message = refused.value.user_message
+    assert "reach everyone" in message
+    assert "ask for the change again" in message.lower()

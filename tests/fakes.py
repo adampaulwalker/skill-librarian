@@ -16,10 +16,20 @@ are kept here deliberately, because each one is a promise the real client makes:
 2. A merge names the exact saved change it is publishing, and is refused when the
    working copy has moved on to anything else since. That is what stops content
    nobody agreed to from being published.
-3. A merge carries across what the working copy changed, laid over whatever the shared
-   copy holds at that moment. It does not stamp a whole snapshot over the shared copy,
-   because that would silently undo somebody else's change that landed in the meantime,
-   and a test about two people publishing at once would then be testing nothing.
+3. A merge is worked out from the point the working copy was cut, exactly as a real merge
+   is. Whatever the working copy changed since that point is carried across, and whatever
+   the shared copy changed since that point is kept. When both of them changed the very
+   same file to two different things, there is nothing to carry across that would not
+   throw one of the two away, so the merge is refused and a person has to sort it out.
+   When both changed the same file to exactly the same text there is nothing to sort out,
+   and the merge goes through cleanly, which is what really happens and is the case that
+   matters most here: two publishes racing for the same version number write byte for byte
+   the same settings files, so nothing conflicts, the content lands, and the version number
+   people see never moves. That is the silent failure, and a stand-in that quietly overlaid
+   one working copy on top of whatever the shared copy held made it invisible.
+4. Taking a working copy away is offered, because the publisher tidies up after a failure
+   and a stand-in that does not offer it lets the tests be green about tidying up that
+   production never does.
 
 The shared copy can also be made to move partway through a piece of work, which is how
 a test recreates two people publishing at the same time. See :meth:`after_next` and
@@ -85,9 +95,13 @@ class FakeGitHubClient:
     calls: list[tuple[str, Any]] = field(default_factory=list)
     merge_attempts: int = 0
 
-    #: What each working copy has changed since it was cut, so a merge carries those files
-    #: across rather than stamping a whole snapshot over the shared copy.
+    #: What each working copy has saved since it was cut. Kept as a record of what a test's
+    #: working copy actually wrote; the merge itself is worked out from the starting point
+    #: below rather than from this, so a merge is never cleaner than a real one would be.
     branch_changes: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Where each working copy was cut from. This is the point a merge is worked out against,
+    #: which is what makes two people changing the same file a clash rather than an overlay.
+    branch_base: dict[str, str] = field(default_factory=dict)
     #: One-shot callbacks to run straight after a named operation. See :meth:`after_next`.
     pending_hooks: dict[str, list[Callable[["FakeGitHubClient"], None]]] = field(
         default_factory=dict
@@ -109,6 +123,7 @@ class FakeGitHubClient:
                 author_email=self.committer_email,
             )
             self.branches[self.default_branch] = root
+            self.branch_base[self.default_branch] = root
 
     # -- helpers used by tests ------------------------------------------------
 
@@ -244,7 +259,35 @@ class FakeGitHubClient:
             )
         self.branches[name] = from_sha
         self.branch_changes[name] = {}
+        self.branch_base[name] = from_sha
         self._fire("create_branch")
+
+    def delete_branch(self, name: str) -> None:
+        """Take a working copy away again, the way the real client does.
+
+        The branch everyone reads from is refused outright, exactly as committing on to it
+        is refused, so a wrong name can never take the shared library with it. A working copy
+        that has already gone is not a problem: tidying up runs when something else has
+        already failed, and that first failure is what the person needs to hear about.
+        """
+        self.calls.append(("delete_branch", name))
+        if self._is_shared_branch(name):
+            raise _fake_error(
+                PublishFailed,
+                "The shared library itself is never taken away. Nothing was changed.",
+            )
+        cleaned = (name or "").strip()
+        if cleaned.startswith("refs/heads/"):
+            cleaned = cleaned[len("refs/heads/") :]
+        if not cleaned:
+            raise _fake_error(
+                PublishFailed,
+                "I was not told which working copy to take away, so nothing was changed.",
+            )
+        self.branches.pop(cleaned, None)
+        self.branch_changes.pop(cleaned, None)
+        self.branch_base.pop(cleaned, None)
+        self._fire("delete_branch")
 
     def commit_files(
         self,
@@ -349,10 +392,19 @@ class FakeGitHubClient:
 
         head_commit = self.commits[self.branches[pull.head]]
         base_sha = self.branches[pull.base]
-        # What the working copy changed, laid over the shared copy as it stands right now. A
-        # change somebody else published in the meantime survives, exactly as it would on
-        # GitHub, so a test about two people publishing at once is testing something real.
-        carried = dict(self.branch_changes.get(pull.head, {}))
+        # A real merge is worked out from the point the working copy was cut, so this one is
+        # too. Anything the working copy changed since then is carried across; anything the
+        # shared copy changed since then is kept; and a file both of them changed to two
+        # different things is a clash that a person has to sort out, which is refused here
+        # exactly as GitHub refuses to merge a pull request that does not merge cleanly.
+        carried, clashes = self._three_way(pull.head, base_sha)
+        if clashes:
+            raise _fake_error(
+                PublishFailed,
+                "These skills were changed by somebody else while this change was waiting, "
+                "and the two changes cannot be put together on their own. Nothing has been "
+                "published. Please ask for the change again, starting from the latest copy.",
+            )
         snapshot = dict(self.commits[base_sha].files)
         snapshot.update(carried)
         merge_sha = self._store_commit(
@@ -402,6 +454,38 @@ class FakeGitHubClient:
         return history
 
     # -- internals ------------------------------------------------------------
+
+    def _three_way(
+        self, head_branch: str, shared_sha: str
+    ) -> tuple[dict[str, str], list[str]]:
+        """What a merge would carry across, and what it could not sort out on its own.
+
+        Measured from the point the working copy was cut, because that is what a merge is.
+        A file only clashes when both sides moved it away from that starting point and they
+        disagree about where it ended up. Both sides writing the very same text is not a
+        clash, and saying otherwise would hide the one race that matters here: two publishes
+        working out the same version number write identical settings files, merge without
+        complaint, and leave the version number people see exactly where it already was.
+        """
+        start = self.branch_base.get(head_branch)
+        if start is None or start not in self.commits:
+            raise _fake_error(
+                PublishFailed,
+                "I could not tell where this change started from, so nothing was published.",
+            )
+        started_from = self.commits[start].files
+        working_copy = self.commits[self.branches[head_branch]].files
+        shared = self.commits[shared_sha].files
+
+        carried = {
+            path: text for path, text in working_copy.items() if started_from.get(path) != text
+        }
+        clashes = sorted(
+            path
+            for path, text in carried.items()
+            if shared.get(path) != started_from.get(path) and shared.get(path) != text
+        )
+        return carried, clashes
 
     def _resolve(self, ref: str) -> str:
         if ref in self.branches:

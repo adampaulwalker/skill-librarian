@@ -170,15 +170,32 @@ class GitHubClient(Protocol):
     def get_file(self, path: str, ref: str) -> tuple[str, str]      # (text, blob_sha)
     def list_dir(self, path: str, ref: str) -> list[dict]
     def create_branch(self, name: str, from_sha: str) -> None
+    def delete_branch(self, name: str) -> None
     def commit_files(self, branch: str, files: dict[str,str], message: str,
                      author_name: str, author_email: str) -> str    # returns commit sha
     def open_pr(self, head: str, base: str, title: str, body: str) -> int
-    def merge_pr(self, number: int, commit_title: str) -> str
+    def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str
     def list_commits(self, path: str, limit: int) -> list[dict]
 ```
 Two implementations: `GitHubAppClient` (production - a GitHub App private key, minting short-lived
 installation tokens, scoped to the single repository) and `TokenClient` (development only, reads
 `LIBRARIAN_DEV_TOKEN`; must log a loud warning that it is not for production).
+
+**Every method above is required of every client, including every stand-in used in tests.** None of
+them is optional and none may be reached for with `getattr`. A method the real clients do not
+implement is a method that silently does nothing in production while the tests stay green, which is
+the drift that hid the first round of bugs here.
+
+`merge_pr` takes `expected_head_sha`: the exact commit the human approved. It is sent to GitHub so
+the merge is refused if the branch has moved since. It is never optional and never defaulted.
+
+`delete_branch` takes the working branch away after a publish fails, so the next attempt at the same
+proposal is not blocked by the leftover. Branch names are derived from the proposal, so the same
+request produces the same name every time. Two rules:
+- Deleting the default branch is refused outright, exactly as `commit_files` refuses to write to it.
+- Deleting a branch that is already gone succeeds quietly. Cleanup runs on a path where something
+  has already failed, and it must never replace that failure with a complaint of its own. Anything
+  else, including a permission problem, is still reported.
 
 **Attribution is the point.** Commits set the git AUTHOR to the human who asked
 (`author_name`, `author_email`) while the COMMITTER is the app. This is how the history names the
@@ -202,6 +219,23 @@ The single write path. In order, no exceptions:
 
 `publish` MUST raise `PublishFailed` rather than proceed if the version did not change. A change that
 ships without a version bump is the exact silent failure this whole project exists to prevent.
+
+**The version guard must refuse BEFORE the merge, never after it.** Content must never land on the
+default branch unless the version strictly increases, so the last thing `publish` does before calling
+`merge_pr` is read the version currently on the default branch and compare it to the version this
+change is about to ship. If the version being shipped is not strictly higher than the one already
+there, `publish` raises `PublishFailed` and does not merge. Another publish landing in the gap can
+take the default branch to the very number this change was going to ship under, and merging on top of
+that puts the content in place while leaving the number that triggers delivery exactly where it was.
+Reading that number and then merging anyway is not a guard.
+
+The readback after the merge is damage detection only. It confirms what landed and reports a problem
+that already happened; it can never be the thing that prevents it, because by then the content is on
+the branch everyone reads from. Detecting a bad merge is not the same as refusing one.
+
+If anything fails after the branch was created, `publish` calls `delete_branch` so the same proposal
+can be tried again without colliding on the branch name. A failure while cleaning up is swallowed,
+because the original failure is what the person needs to hear about.
 
 ### `src/librarian/service.py`
 Tool-level operations, each taking a verified `actor` (name + email), each returning plain English:
@@ -227,6 +261,12 @@ Use pytest. A fake in-memory `GitHubClient` for everything. Required tests, at m
   with a test that greps the package source for a small denylist of such strings.
 - Both manifests always end up carrying the same version.
 - Publish goes through a pull request and merge, never a direct push to the default branch.
+- A publish whose version would not be strictly higher than the one already on the default branch is
+  refused before `merge_pr` is ever called, proved by there being no merge in the recorded calls.
+- Every stand-in offers every method the `GitHubClient` contract offers, spelled the same way, so a
+  test can never be green about behaviour production does not have.
+- A failed publish takes its working branch away, and the same proposal can then be published again.
+- Deleting the default branch is refused; deleting a branch that is already gone is not an error.
 - Approving with a stale or altered `diff_hash` is refused.
 - An expired proposal is refused.
 - Path traversal, absolute paths, and writes to `.github/` or the manifests are all refused.

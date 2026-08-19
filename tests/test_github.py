@@ -108,6 +108,8 @@ def git_data_handler(
     merge_status: int = 200,
     merge_message: str = "not mergeable",
     branch_head_now: str | None = None,
+    delete_status: int = 204,
+    delete_message: str = "Reference does not exist",
 ) -> Callable[[httpx.Request], httpx.Response]:
     """Answers the whole branch, commit, pull request and merge conversation.
 
@@ -134,6 +136,11 @@ def git_data_handler(
             return json_response({"sha": new_commit_sha}, status=201)
         if "/git/refs/heads/" in path and request.method == "PATCH":
             return json_response({"object": {"sha": new_commit_sha}})
+        if "/git/refs/heads/" in path and request.method == "DELETE":
+            # GitHub answers a branch it really did take away with no content at all.
+            if delete_status == 204:
+                return httpx.Response(204)
+            return json_response({"message": delete_message}, status=delete_status)
         if path.endswith("/git/refs") and request.method == "POST":
             return json_response({"ref": "refs/heads/new"}, status=201)
         if path.endswith("/commits") and request.method == "GET":
@@ -327,15 +334,59 @@ def test_token_client_without_a_token_says_so_plainly(monkeypatch: pytest.Monkey
     assert_plain_english(failure.value.user_message)
 
 
+def missing_from_the_contract(client: object) -> list[str]:
+    """Every part of the contract this client does not actually offer.
+
+    ``isinstance`` gives a bare true or false, which tells whoever reads a failure nothing
+    about what is missing. Naming the gap is the difference between a five minute fix and an
+    afternoon, so the same check is done twice: once for the name, once for the answer.
+    """
+    return sorted(
+        name
+        for name in GitHubClient.__protocol_attrs__
+        if not callable(getattr(client, name, None))
+    )
+
+
 def test_both_clients_satisfy_the_protocol(
     rsa_key: tuple[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("LIBRARIAN_DEV_TOKEN", "dev-token-value")
     api = RecordingAPI(git_data_handler())
     with pytest.warns(RuntimeWarning):
-        assert isinstance(TokenClient(OWNER, REPO, http_client=api.client()), GitHubClient)
-    assert isinstance(app_client(api, rsa_key), GitHubClient)
-    assert isinstance(FakeGitHubClient(), GitHubClient)
+        development = TokenClient(OWNER, REPO, http_client=api.client())
+    production = app_client(api, rsa_key)
+
+    assert missing_from_the_contract(development) == []
+    assert missing_from_the_contract(production) == []
+    assert isinstance(development, GitHubClient)
+    assert isinstance(production, GitHubClient)
+
+    # The stand-in nearly every other test in this suite leans on. If it promises less than
+    # the real client promises, those tests are green about behaviour production never had.
+    fake = FakeGitHubClient()
+    assert missing_from_the_contract(fake) == [], (
+        "the shared stand-in in tests/fakes.py no longer offers everything the real client "
+        "offers, so any test that leans on it is green about behaviour production may not have"
+    )
+    assert isinstance(fake, GitHubClient)
+
+
+def test_taking_a_working_copy_away_is_part_of_the_contract(rsa_key: tuple[str, Any]) -> None:
+    """Said on its own because leaving it optional is what let a real bug through.
+
+    The publisher takes its working copy away when a publish falls over. While removing a
+    working copy was something a client could choose not to offer, neither real client
+    offered it, so that tidying up quietly did nothing in production. Branch names are worked
+    out from the change itself, so the leftover then blocked the next attempt at exactly the
+    moment somebody was retrying.
+    """
+    assert "delete_branch" in GitHubClient.__protocol_attrs__, (
+        "removing a working copy has to be part of the contract, or a client can leave it out "
+        "and the tidying up after a failed publish silently does nothing"
+    )
+    api = RecordingAPI(git_data_handler())
+    assert callable(getattr(app_client(api, rsa_key), "delete_branch", None))
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +844,142 @@ def test_create_branch_asks_for_the_right_reference(rsa_key: tuple[str, Any]) ->
 
 
 # ---------------------------------------------------------------------------
+# taking the working copy away again after a publish falls over
+# ---------------------------------------------------------------------------
+
+
+def deletes(api: RecordingAPI) -> list[str]:
+    """Every branch this client actually asked GitHub to take away."""
+    return [
+        request.url.path
+        for request in api.requests
+        if request.method == "DELETE" and "/git/refs/heads/" in request.url.path
+    ]
+
+
+def test_delete_branch_asks_github_to_take_the_working_copy_away(rsa_key: tuple[str, Any]) -> None:
+    api = RecordingAPI(git_data_handler())
+
+    app_client(api, rsa_key).delete_branch("librarian/onboarding-ab12")
+
+    assert deletes(api) == [
+        f"/repos/{OWNER}/{REPO}/git/refs/heads/librarian/onboarding-ab12"
+    ], "the working copy has to actually be taken away, or the next attempt collides with it"
+
+
+def test_delete_branch_does_not_repeat_the_reference_prefix(rsa_key: tuple[str, Any]) -> None:
+    """A caller that spells out the full reference must still reach the same branch."""
+    api = RecordingAPI(git_data_handler())
+
+    app_client(api, rsa_key).delete_branch("refs/heads/librarian/onboarding-ab12")
+
+    assert deletes(api) == [f"/repos/{OWNER}/{REPO}/git/refs/heads/librarian/onboarding-ab12"]
+
+
+def test_delete_branch_refuses_the_shared_branch(rsa_key: tuple[str, Any]) -> None:
+    """Tidying up must never be able to take the library everyone reads from with it."""
+    api = RecordingAPI(git_data_handler())
+    client = app_client(api, rsa_key, default_branch="main")
+
+    for spelling in ["main", " main ", "refs/heads/main", "Main", "MAIN", "main/"]:
+        with pytest.raises(PublishFailed) as failure:
+            client.delete_branch(spelling)
+        assert_plain_english(failure.value.user_message)
+
+    assert deletes(api) == [], "nothing may be sent at all when the name is the shared branch"
+
+
+def test_the_shared_branch_that_may_not_be_removed_is_whichever_one_this_library_uses(
+    rsa_key: tuple[str, Any],
+) -> None:
+    """Nothing here assumes the shared branch is called main."""
+    api = RecordingAPI(git_data_handler())
+    client = app_client(api, rsa_key, default_branch="trunk")
+
+    with pytest.raises(PublishFailed) as failure:
+        client.delete_branch("trunk")
+    assert_plain_english(failure.value.user_message)
+    assert deletes(api) == []
+
+    # A branch called main is an ordinary working copy for this library, so it may go.
+    client.delete_branch("main")
+    assert deletes(api) == [f"/repos/{OWNER}/{REPO}/git/refs/heads/main"]
+
+
+def test_the_development_client_refuses_to_remove_the_shared_branch_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIBRARIAN_DEV_TOKEN", "dev-token-value")
+    api = RecordingAPI(git_data_handler())
+    with pytest.warns(RuntimeWarning):
+        client = TokenClient(OWNER, REPO, http_client=api.client())
+
+    with pytest.raises(PublishFailed) as failure:
+        client.delete_branch("main")
+
+    assert_plain_english(failure.value.user_message)
+    assert deletes(api) == []
+
+
+def test_delete_branch_without_a_name_never_reaches_github(rsa_key: tuple[str, Any]) -> None:
+    api = RecordingAPI(git_data_handler())
+    client = app_client(api, rsa_key, default_branch="trunk")
+
+    for empty in ["", "   ", "refs/heads/"]:
+        with pytest.raises(PublishFailed) as failure:
+            client.delete_branch(empty)
+        assert_plain_english(failure.value.user_message)
+
+    assert deletes(api) == []
+
+
+@pytest.mark.parametrize(
+    "status,message",
+    [
+        (404, "Not Found"),
+        (422, "Reference does not exist"),
+    ],
+)
+def test_a_branch_that_is_already_gone_is_not_an_error(
+    rsa_key: tuple[str, Any], status: int, message: str
+) -> None:
+    """Tidying up runs when something else has already gone wrong.
+
+    The person needs to hear about that first problem. A complaint that the working copy was
+    already gone would bury it, and being already gone is the outcome that was wanted anyway.
+    """
+    api = RecordingAPI(git_data_handler(delete_status=status, delete_message=message))
+
+    app_client(api, rsa_key).delete_branch("librarian/onboarding-ab12")
+
+    assert deletes(api) == [f"/repos/{OWNER}/{REPO}/git/refs/heads/librarian/onboarding-ab12"]
+
+
+@pytest.mark.parametrize(
+    "status,message,kind",
+    [
+        (500, "Server Error", PublishFailed),
+        (403, "Resource not accessible by integration", NotAuthorized),
+        (422, "Validation failed for something else entirely", PublishFailed),
+    ],
+)
+def test_a_real_problem_while_tidying_up_is_still_reported(
+    rsa_key: tuple[str, Any], status: int, message: str, kind: type[LibrarianError]
+) -> None:
+    """Only a branch that has gone is quiet. Everything else is said out loud.
+
+    A blanket silence here would turn a lost permission into a repository slowly filling with
+    working copies that nobody ever hears about.
+    """
+    api = RecordingAPI(git_data_handler(delete_status=status, delete_message=message))
+
+    with pytest.raises(kind) as failure:
+        app_client(api, rsa_key).delete_branch("librarian/onboarding-ab12")
+
+    assert_plain_english(failure.value.user_message)
+
+
+# ---------------------------------------------------------------------------
 # the in-memory fake, which the rest of the suite relies on
 # ---------------------------------------------------------------------------
 
@@ -916,3 +1103,148 @@ def test_fake_history_lists_only_commits_touching_the_file() -> None:
     history = gh.list_commits("plugins/p/skills/onboarding/SKILL.md", 10)
     assert len(history) >= 2
     assert history[0]["author_name"] == "Ellie Ward"
+
+
+def test_fake_taking_a_working_copy_away_frees_the_name_for_a_second_attempt() -> None:
+    """The reason removing a working copy exists at all, checked on the shared stand-in.
+
+    A working copy is named after the change it carries, so the same request produces the
+    same name every time. If a publish falls over and the leftover is not taken away, the
+    person's next attempt is refused because the name is still in use. A stand-in that
+    accepts the request and does nothing would let every test above this line stay green
+    while production kept the leftover.
+    """
+    gh = FakeGitHubClient()
+    start = gh.get_ref_sha("main")
+    gh.create_branch("librarian/onboarding-ab12", start)
+
+    gh.delete_branch("librarian/onboarding-ab12")
+
+    assert "librarian/onboarding-ab12" not in gh.branches
+    # The second attempt at the very same change now gets through.
+    gh.create_branch("librarian/onboarding-ab12", start)
+    assert gh.branches["librarian/onboarding-ab12"] == start
+
+
+def test_fake_refuses_to_take_the_shared_branch_away() -> None:
+    gh = FakeGitHubClient()
+    gh.seed({"plugins/p/skills/onboarding/SKILL.md": "body"})
+
+    with pytest.raises(PublishFailed) as failure:
+        gh.delete_branch("main")
+
+    assert_plain_english(failure.value.user_message)
+    assert "main" in gh.branches
+    assert gh.files_on("main")["plugins/p/skills/onboarding/SKILL.md"] == "body"
+
+
+def test_fake_taking_away_a_working_copy_that_is_already_gone_is_not_an_error() -> None:
+    """Tidying up runs after something else failed, so it must not raise over the top of it."""
+    gh = FakeGitHubClient()
+    gh.delete_branch("librarian/never-existed-ab12")
+
+
+# ---------------------------------------------------------------------------
+# what the fake does when two people changed the same files at once
+# ---------------------------------------------------------------------------
+#
+# The fake's merge is the load bearing part of every test about two people publishing at
+# the same time. While it simply laid one working copy over whatever the shared copy held,
+# every such race looked like it merged cleanly no matter what the two sides had done, and
+# a publish that should never have been merged at all merged happily in the tests. Both
+# directions are pinned here so that behaviour cannot quietly drift back.
+
+
+def racing_branch(gh: FakeGitHubClient, ours: dict[str, str]) -> tuple[str, int, str]:
+    """A working copy cut from the shared copy, carrying ``ours``, put up for review."""
+    start = gh.get_ref_sha("main")
+    gh.create_branch("librarian/onboarding-ab12", start)
+    head = gh.commit_files(
+        "librarian/onboarding-ab12", ours, "Update onboarding", "Ellie Ward", "ellie@example.com"
+    )
+    number = gh.open_pr("librarian/onboarding-ab12", "main", "Update onboarding", "body")
+    return "librarian/onboarding-ab12", number, head
+
+
+def test_fake_refuses_a_merge_when_both_sides_changed_the_same_file_differently() -> None:
+    """Two people changing one file to two different things is a clash, not an overlay.
+
+    GitHub refuses to merge a pull request that does not go together on its own, and so
+    does this. A stand-in that quietly picked one of the two would let a test claim a race
+    ended well when in reality a person would have had to sort it out by hand.
+    """
+    gh = FakeGitHubClient()
+    gh.seed({"plugins/p/.claude-plugin/plugin.json": '{"name": "p", "version": "1.4.2"}\n'})
+    branch, number, head = racing_branch(
+        gh, {"plugins/p/.claude-plugin/plugin.json": '{"name": "p", "version": "1.4.3"}\n'}
+    )
+
+    gh.move_default_branch(
+        {"plugins/p/.claude-plugin/plugin.json": '{"name": "p", "version": "1.5.0"}\n'}
+    )
+
+    with pytest.raises(PublishFailed) as refused:
+        gh.merge_pr(number, "Update onboarding", head)
+
+    assert_plain_english(refused.value.user_message)
+    # The shared copy is untouched, exactly as it would be after GitHub refused.
+    assert gh.pull_requests[number].merged is False
+    assert json.loads(gh.files_on("main")["plugins/p/.claude-plugin/plugin.json"])["version"] == (
+        "1.5.0"
+    )
+
+
+def test_fake_merges_cleanly_when_both_sides_wrote_the_very_same_text() -> None:
+    """The race that matters, and the reason this fake must not simply refuse every race.
+
+    Two publishes that both work the version out from 1.4.2 both write 1.4.3, byte for
+    byte. Nothing clashes, because there is nothing to choose between. Git merges it, the
+    wording lands, and the version number people see does not move at all. Refusing this
+    would hide the exact failure the publish path has to refuse for itself, so the fake
+    lets it through and the guard before the merge is what has to stop it.
+    """
+    gh = FakeGitHubClient()
+    gh.seed(
+        {
+            "plugins/p/.claude-plugin/plugin.json": '{"name": "p", "version": "1.4.2"}\n',
+            "plugins/p/skills/onboarding/SKILL.md": "old",
+        }
+    )
+    bumped = '{"name": "p", "version": "1.4.3"}\n'
+    branch, number, head = racing_branch(
+        gh,
+        {
+            "plugins/p/.claude-plugin/plugin.json": bumped,
+            "plugins/p/skills/onboarding/SKILL.md": "new",
+        },
+    )
+
+    # Somebody else publishes a different skill and arrives at the very same version number.
+    gh.move_default_branch(
+        {
+            "plugins/p/.claude-plugin/plugin.json": bumped,
+            "plugins/p/skills/weekly-report/SKILL.md": "theirs",
+        }
+    )
+
+    gh.merge_pr(number, "Update onboarding", head)
+
+    shared = gh.files_on("main")
+    assert shared["plugins/p/skills/onboarding/SKILL.md"] == "new"
+    assert shared["plugins/p/skills/weekly-report/SKILL.md"] == "theirs"
+    # And there it is: the wording landed and the version number did not move.
+    assert json.loads(shared["plugins/p/.claude-plugin/plugin.json"])["version"] == "1.4.3"
+
+
+def test_fake_keeps_what_somebody_else_changed_in_a_file_this_change_never_touched() -> None:
+    """A merge carries this change across without undoing anybody else's."""
+    gh = FakeGitHubClient()
+    gh.seed({"plugins/p/skills/onboarding/SKILL.md": "old"})
+    branch, number, head = racing_branch(gh, {"plugins/p/skills/onboarding/SKILL.md": "new"})
+
+    gh.move_default_branch({"plugins/p/skills/weekly-report/SKILL.md": "theirs"})
+    gh.merge_pr(number, "Update onboarding", head)
+
+    shared = gh.files_on("main")
+    assert shared["plugins/p/skills/onboarding/SKILL.md"] == "new"
+    assert shared["plugins/p/skills/weekly-report/SKILL.md"] == "theirs"

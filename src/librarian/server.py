@@ -26,7 +26,7 @@ from .config import Config, load_config
 from .errors import LibrarianError
 from .github import GitHubClient
 from .proposals import ProposalStore
-from .service import ANONYMOUS, Actor, ProposalPreview
+from .service import ANONYMOUS, APPROVE_TOOL_DESCRIPTION, Actor, ProposalPreview
 
 SERVER_NAME = "skill-librarian"
 SERVER_VERSION = "0.1.0"
@@ -285,11 +285,11 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "approve",
-        "description": (
-            "Publish a change that was already prepared. Show the person the full "
-            "difference from propose_edit and get their explicit yes before calling "
-            "this. Pass back the same proposal_id and diff_hash they were shown."
-        ),
+        # The one place this wording lives is service.APPROVE_TOOL_DESCRIPTION. It is used
+        # here as it is, never restated, because a shorter retelling is what a host and a
+        # model actually read, and every retelling so far has dropped the part that says
+        # the two references do not prove a person agreed to anything.
+        "description": APPROVE_TOOL_DESCRIPTION,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -343,6 +343,18 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+#: What the host is told about this connector as a whole. The part about approving is not
+#: written again here: the approve tool's own wording is quoted, so there is only ever one
+#: version of it to keep true.
+SERVER_INSTRUCTIONS: str = (
+    "Tools for reading and changing the shared skills kept in this library. Reading and "
+    "preparing a change are safe. Publishing is not, so before calling approve, show the "
+    "person the whole difference that propose_edit handed back and wait for them to say "
+    "yes in their own words. The approve tool describes what that means and what it does "
+    "not mean:\n\n" + APPROVE_TOOL_DESCRIPTION
+)
 
 
 def _text_result(text: str, is_error: bool = False) -> dict[str, Any]:
@@ -472,11 +484,7 @@ def _handle_message(
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-            "instructions": (
-                "Tools for reading and changing the shared Claude skills. Always show "
-                "the person the full difference from propose_edit and wait for their "
-                "yes before calling approve."
-            ),
+            "instructions": SERVER_INSTRUCTIONS,
         }
     elif method == "ping":
         result = {}

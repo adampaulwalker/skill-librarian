@@ -49,7 +49,23 @@ CONTRACT: dict[str, inspect.Signature] = {
 
 #: Methods a stand-in may add for the tests' own convenience without claiming to be the
 #: real client. They are not part of the contract, so they are not checked against it.
-NOT_PART_OF_THE_CONTRACT = frozenset({"delete_branch"})
+#:
+#: This is deliberately empty. It once held ``delete_branch``, written down while taking a
+#: working copy away was something a client could choose not to offer. That exemption is
+#: exactly how the drift got in: the publisher called it, no real client had it, and every
+#: stand-in was excused from being checked, so nothing anywhere said a word. Anything added
+#: back here has to be something no production client will ever be asked for.
+NOT_PART_OF_THE_CONTRACT: frozenset[str] = frozenset()
+
+
+def test_nothing_in_the_real_contract_is_excused_from_being_checked() -> None:
+    """An exemption naming a real method turns this whole file into a rubber stamp."""
+    excused = sorted(NOT_PART_OF_THE_CONTRACT & set(CONTRACT))
+    assert excused == [], (
+        f"these are part of the real contract but excused from every check below: {excused}. "
+        "A stand-in may then spell them any way it likes, or leave them out entirely, which "
+        "is the drift this file exists to catch."
+    )
 
 
 def _shape_of_signature(signature: inspect.Signature) -> list[tuple[str, str, bool]]:

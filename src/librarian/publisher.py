@@ -16,11 +16,19 @@ moves on its own would push a change at people who never asked for one.
 Two people can ask for a change to the same skills at the same time, and both of them can work the
 new version number out from the same starting point. Whoever gets there second would then publish
 content while the version number people see stays exactly where the first person left it, which is
-the silent failure again. So the shared copy is read once more in the moment before the change is
-merged, the version number is worked out again from what is there right then if it has moved, and
-after the merge the shared copy is read a third time to confirm that the content arrived and that
-the version number really did move forward. If that cannot be confirmed, the person is told the
-change may not have reached everyone rather than being told it worked.
+the silent failure again. So the shared copy is read again before the change is put forward for
+review, and if it has moved the version number is worked out again from what is there right then
+and the working copy is started again from where the shared copy now stands.
+
+Then, in the last moment before the change is merged, the shared copy is read once more and the
+version number this change is about to ship is compared against it. If it is not higher, the merge
+does not happen at all. That comparison is the guard, and refusing is the only thing it can do:
+merging and then noticing would put the wording on the shared copy under a number that had already
+gone out, and everyone holding that number would keep what they have forever.
+
+After the merge the shared copy is read one final time. That last read is damage detection and
+nothing more. It confirms what arrived and tells the person plainly when something is wrong, but it
+comes too late to stop anything, so it is never the thing that keeps a bad publish from happening.
 """
 
 from __future__ import annotations
@@ -68,6 +76,11 @@ _SKILL_FILE_NAME = "SKILL.md"
 
 _NOTHING_PUBLISHED = "Nothing has been published."
 
+#: How many times a publish will work its version number out again when somebody else keeps
+#: getting there first. A busy library could hand out a new number forever, so this stops and
+#: says so instead of going round in circles.
+_MAX_VERSION_ATTEMPTS = 3
+
 
 @dataclass(frozen=True)
 class PublishResult:
@@ -101,7 +114,6 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
     files_to_write = _checked_proposal_files(plugin, skill_name, cleaned)
 
     base_plugin_manifest = _read_manifest(gh, plugin.manifest_path, proposal.base_sha)
-    base_marketplace_text = _read_text(gh, MARKETPLACE_MANIFEST, proposal.base_sha)
     old_version = _current_version(base_plugin_manifest, plugin)
 
     # The person was shown exactly what would change, measured against one exact copy of the
@@ -123,10 +135,8 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
     new_version = _bumped_version(old_version, bump)
     _assert_version_moved(new_version, old_version)
 
-    plugin_text = _render_json(_with_version(base_plugin_manifest, new_version))
-    marketplace_text = _marketplace_text_with_version(base_marketplace_text, plugin, new_version)
-    _assert_manifests_in_step(
-        plugin_text, marketplace_text, base_marketplace_text, plugin, new_version
+    plugin_text, marketplace_text = _manifests_for(
+        gh, plugin, proposal.base_sha, base_plugin_manifest, new_version
     )
 
     # Work out who this commit belongs to before anything is written. A change is only published
@@ -136,17 +146,16 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
     # Step 3. Cut a branch. The shared branch is never written to directly, because a change pushed
     # straight to it does not trigger any delivery at all.
     branch = _branch_name(cfg, proposal)
+    # A start that fails is deliberately not tidied up. The usual reason it fails is that a
+    # working copy under that name is already there, and taking that one away could throw away
+    # somebody else's work that is still going on. A stray working copy nobody is using costs
+    # nothing; somebody's afternoon does.
+    _create_working_copy(gh, branch, head_sha)
 
-    try:
-        gh.create_branch(branch, head_sha)
-    except LibrarianError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - turned into a plain English message below
-        raise PublishFailed(
-            "A working copy for this change could not be started, so nothing has been changed for "
-            "anyone. Please try again.",
-            detail=f"create_branch failed: {exc}",
-        ) from exc
+    # Every working copy this publish makes, so that a failure takes all of them away again. The
+    # version guard below can start the working copy over on a newer starting point, which makes
+    # a second one.
+    working_copies: list[str] = [branch]
 
     # From here on a working copy exists, so every way out of this function that is not a finished
     # publish takes that working copy away again. Otherwise a second attempt at the same change
@@ -154,74 +163,76 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
     try:
         # Step 4. One commit carries the edited files and both manifests together, so there is no
         # state where the content moved and the version did not.
-        payload: dict[str, str] = dict(files_to_write)
-        payload[plugin.manifest_path] = plugin_text
-        payload[MARKETPLACE_MANIFEST] = marketplace_text
+        commit_sha = _save_working_copy(
+            gh,
+            branch,
+            _payload(files_to_write, plugin, plugin_text, marketplace_text),
+            _commit_message(proposal, skill_name, new_version, author_name, author_email),
+            author_name,
+            author_email,
+        )
 
-        try:
-            commit_sha = gh.commit_files(
+        # Step 5. Look at the shared copy again, before this change is put forward for review at
+        # all. If someone else published while this change was being prepared, the version number
+        # worked out earlier is already in use, and shipping under it would leave the version
+        # people see exactly where it already was. That is the silent failure, so the number is
+        # worked out again from what the shared copy says right now.
+        #
+        # The working copy is started again from where the shared copy now stands, rather than
+        # having a new number written on top of a copy that was cut from an older starting point.
+        # A copy cut from an older starting point holds one answer for the two settings files
+        # while the shared copy now holds another, and putting the two together is the kind of
+        # clash a person has to sort out by hand before anything can be merged. Starting again
+        # from where the shared copy really is leaves nothing to sort out.
+        #
+        # This all happens before the change is put forward rather than after, so the wording
+        # people read on the change itself names the version number that actually goes out. A
+        # change whose wording promises one version while another one ships is a change nobody
+        # can check by reading it.
+        attempts = 0
+        while True:
+            shared_sha, shared_plugin_manifest = _shared_copy_manifest(gh, cfg, plugin)
+            shared_version = _current_version(shared_plugin_manifest, plugin)
+            if _is_higher(new_version, shared_version):
+                break
+
+            attempts += 1
+            if attempts > _MAX_VERSION_ATTEMPTS:
+                # Somebody keeps getting there first. Trying forever against a busy library is a
+                # problem of its own, so this stops and says so rather than going round in circles.
+                raise PublishFailed(
+                    "Several people are changing these skills at the same time, so this change "
+                    "could not be given a version number ahead of the ones already going out. It "
+                    "has not been published and nothing has been changed for anyone. Please try "
+                    "again in a few minutes.",
+                    detail=(
+                        f"gave up after {_MAX_VERSION_ATTEMPTS} attempts to get past the shared "
+                        f"version {shared_version}"
+                    ),
+                )
+
+            new_version = _bumped_version(shared_version, bump)
+            _assert_version_moved(new_version, shared_version)
+            plugin_text, marketplace_text = _manifests_for(
+                gh, plugin, shared_sha, shared_plugin_manifest, new_version
+            )
+
+            if _remove_working_copy(gh, branch):
+                working_copies.remove(branch)
+            branch = _branch_name(cfg, proposal, attempts)
+            # Only a working copy this publish really did start is written down as one to tidy
+            # up afterwards. A name that was already taken belongs to somebody else's work, and
+            # tidying that away would throw their afternoon out with it.
+            _create_working_copy(gh, branch, shared_sha)
+            working_copies.append(branch)
+            commit_sha = _save_working_copy(
+                gh,
                 branch,
-                payload,
+                _payload(files_to_write, plugin, plugin_text, marketplace_text),
                 _commit_message(proposal, skill_name, new_version, author_name, author_email),
                 author_name,
                 author_email,
             )
-        except LibrarianError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise PublishFailed(
-                "The change could not be saved, so nothing has been changed for anyone. Please try "
-                "again.",
-                detail=f"commit_files failed: {exc}",
-            ) from exc
-
-        # Step 5. Look at the shared copy one last time, in the moment before this change is put
-        # forward. If someone else published while this change was being prepared, the version
-        # number worked out earlier is already in use, and merging on top of it would leave the
-        # version people see exactly where it already was. That is the silent failure, so the
-        # number is worked out again from what the shared copy says right now and written into
-        # both manifests again.
-        #
-        # This happens before the change is put forward for merging rather than after, so that the
-        # wording people read on the change itself names the version number that actually goes
-        # out. A change whose wording promises one version while another one ships is a change
-        # nobody can check by reading it.
-        shared_sha, shared_plugin_manifest = _shared_copy_manifest(gh, cfg, plugin)
-        version_before_merge = _current_version(shared_plugin_manifest, plugin)
-
-        if version_before_merge != old_version:
-            new_version = _bumped_version(version_before_merge, bump)
-            _assert_version_moved(new_version, version_before_merge)
-
-            shared_marketplace_text = _read_text(gh, MARKETPLACE_MANIFEST, shared_sha)
-            plugin_text = _render_json(_with_version(shared_plugin_manifest, new_version))
-            marketplace_text = _marketplace_text_with_version(
-                shared_marketplace_text, plugin, new_version
-            )
-            _assert_manifests_in_step(
-                plugin_text, marketplace_text, shared_marketplace_text, plugin, new_version
-            )
-
-            try:
-                commit_sha = gh.commit_files(
-                    branch,
-                    {
-                        plugin.manifest_path: plugin_text,
-                        MARKETPLACE_MANIFEST: marketplace_text,
-                    },
-                    _commit_message(proposal, skill_name, new_version, author_name, author_email),
-                    author_name,
-                    author_email,
-                )
-            except LibrarianError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                raise PublishFailed(
-                    "Someone else published a change to these skills a moment ago, and this change "
-                    "could not be moved on to a new version number to sit alongside it, so it has "
-                    "not reached anyone. Please try again.",
-                    detail=f"commit_files failed while redoing the version: {exc}",
-                ) from exc
 
         # Step 6. Put the change forward for merging. Both the wording and the version number it
         # names are the ones settled on just above, so the change reads as exactly what will ship.
@@ -245,19 +256,35 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
                 detail=f"open_pr failed: {exc}",
             ) from exc
 
-        # Look at the shared copy one final time, in the last moment before the merge. This is
-        # the number the merge is really being measured against, and it is read here rather than
-        # reused from earlier because the shared copy can move again while the change is being
-        # put up for review. If a third change landed in that gap and took the version to the
-        # very number this change was going to ship under, then merging now would leave the
-        # shared copy standing exactly where it already stood. The content would be there and
-        # nobody would ever fetch it, because the number that tells Claude to fetch it did not
-        # move. Measuring against a number noted down earlier would call that a success.
+        # Step 6b. THE GUARD. Look at the shared copy one final time, in the last moment before
+        # the merge, and compare the number this change is about to ship against the number that
+        # is really there right now. This is read here rather than reused from a moment ago
+        # because the shared copy can move again while the change is being put up for review.
+        #
+        # If a further change landed in that gap and took the version to the very number this
+        # change was going to ship under, then merging now would leave the shared copy standing
+        # exactly where it already stood. The wording would be there and nobody would ever fetch
+        # it, because the number that tells Claude to fetch it did not move. So the merge does not
+        # happen at all. Nothing at this point can start the working copy over, because the change
+        # has already been put forward for review from it, so the only honest answer is to refuse.
         version_just_before_merge = _current_version(
             _read_manifest(gh, plugin.manifest_path, _shared_copy_head(gh, cfg)), plugin
         )
+        if not _is_higher(new_version, version_just_before_merge):
+            raise PublishFailed(
+                "Someone else published a change to these skills a moment ago, and the version "
+                "number this change was going to use is no longer ahead of the one that has "
+                "already gone out. Putting this change in now would not reach everyone, because "
+                "anyone who already has that version would keep the wording they have and would "
+                "never see this one. So it was not published, and nothing has been changed for "
+                "anyone. Please ask for the change again, and it will start from the latest copy.",
+                detail=(
+                    f"planned {new_version} is not higher than {version_just_before_merge} on "
+                    f"{cfg.default_branch}"
+                ),
+            )
 
-        # Step 6b. Merge it, naming the exact saved change that is being published. Only a merge
+        # Step 6c. Merge it, naming the exact saved change that is being published. Only a merge
         # into the shared copy makes a change reach people, and naming the change means a working
         # copy that was altered after it was agreed to is refused rather than published.
         try:
@@ -271,19 +298,27 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
                 detail=f"merge_pr failed: {exc}",
             ) from exc
 
-        # Step 6c. Read the shared copy back and make sure the change really did land, with a
-        # version number that moved forward from where it was a moment ago. Content that arrived
-        # under a version number that did not move reaches nobody, and nobody would be told.
+        # Step 6d. Read the shared copy back. THIS IS DAMAGE DETECTION, NOT THE GUARD. By now the
+        # wording is already on the copy everyone reads from, so nothing here can prevent a bad
+        # publish; it can only notice one and say so. The refusal in step 6b is what keeps a merge
+        # from happening under a number that did not move, and this must never be mistaken for it.
         _assert_the_change_reached_everyone(
             gh, cfg, plugin, files_to_write, version_just_before_merge
         )
+
     except BaseException:
         # The reason this publish failed is what the person needs to hear, so taking the working
-        # copy away is never allowed to replace it with a different error.
-        _remove_working_copy(gh, branch)
+        # copies away is never allowed to replace it with a different error.
+        for leftover in working_copies:
+            _remove_working_copy(gh, leftover)
         raise
 
-    # Step 7.
+    # Step 7. Anything left over from starting the change again is taken away, so a working copy
+    # nobody is using does not sit there for good after a publish that worked.
+    for leftover in working_copies:
+        if leftover != branch:
+            _remove_working_copy(gh, leftover)
+
     return PublishResult(
         commit_sha=commit_sha,
         pr_number=pr_number,
@@ -291,6 +326,79 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
         estimated_live_by=estimated_live_by(cfg),
         plugin_name=plugin.name,
     )
+
+
+def _payload(
+    files_to_write: dict[str, str],
+    plugin: PluginRef,
+    plugin_text: str,
+    marketplace_text: str,
+) -> dict[str, str]:
+    """Everything one commit carries: the edited files and both settings files together.
+
+    They travel together on purpose. There is no moment where the wording has moved and the
+    version number that delivers it has not.
+    """
+    payload: dict[str, str] = dict(files_to_write)
+    payload[plugin.manifest_path] = plugin_text
+    payload[MARKETPLACE_MANIFEST] = marketplace_text
+    return payload
+
+
+def _create_working_copy(gh: GitHubClient, branch: str, from_sha: str) -> None:
+    """Start a working copy of the library at an exact starting point."""
+    try:
+        gh.create_branch(branch, from_sha)
+    except LibrarianError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - turned into a plain English message below
+        raise PublishFailed(
+            "A working copy for this change could not be started, so nothing has been changed for "
+            "anyone. Please try again.",
+            detail=f"create_branch failed: {exc}",
+        ) from exc
+
+
+def _save_working_copy(
+    gh: GitHubClient,
+    branch: str,
+    payload: dict[str, str],
+    message: str,
+    author_name: str,
+    author_email: str,
+) -> str:
+    """Save everything into the working copy in one go, under the name of the person who asked."""
+    try:
+        return gh.commit_files(branch, payload, message, author_name, author_email)
+    except LibrarianError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PublishFailed(
+            "The change could not be saved, so nothing has been changed for anyone. Please try "
+            "again.",
+            detail=f"commit_files failed: {exc}",
+        ) from exc
+
+
+def _manifests_for(
+    gh: GitHubClient,
+    plugin: PluginRef,
+    ref: str,
+    plugin_manifest: dict[str, Any],
+    new_version: str,
+) -> tuple[str, str]:
+    """Both settings files, carrying the new version, built from one exact copy of the library.
+
+    Building them from the copy they will sit on top of is what keeps this simple. Every other
+    collection's entry keeps the bytes that copy already had.
+    """
+    marketplace_before = _read_text(gh, MARKETPLACE_MANIFEST, ref)
+    plugin_text = _render_json(_with_version(plugin_manifest, new_version))
+    marketplace_text = _marketplace_text_with_version(marketplace_before, plugin, new_version)
+    _assert_manifests_in_step(
+        plugin_text, marketplace_text, marketplace_before, plugin, new_version
+    )
+    return plugin_text, marketplace_text
 
 
 def estimated_live_by(cfg: Config, now: datetime | None = None) -> str:
@@ -368,16 +476,24 @@ def _assert_the_change_reached_everyone(
     files: dict[str, str],
     version_before_merge: str,
 ) -> None:
-    """Read the shared copy back and prove both halves of a real delivery arrived.
+    """Read the shared copy back and prove every part of a real delivery arrived.
 
-    Both halves have to be true. The content has to be there, and the version number has to be
-    higher than it was a moment before, because that number is the only thing that tells Claude to
-    pick the content up. Either one on its own is a change that nobody receives.
+    This runs after the merge, so it is damage detection and nothing more. It can say that
+    something went wrong; it cannot stop it. What keeps a change from being merged under a
+    version number that did not move is the refusal before the merge, not this.
+
+    Three things have to be true. The wording has to be there. The collection's own version
+    number has to be higher than it was a moment before, because that number is the only thing
+    that tells Claude to pick the wording up. And the library's list has to be carrying the same
+    number for that collection, because the two are meant to stay in step and a check that only
+    looks at one of them proves half of what it claims to prove.
     """
     try:
         sha = _shared_copy_head(gh, cfg)
         manifest = _read_manifest(gh, plugin.manifest_path, sha)
         landed_version = _current_version(manifest, plugin)
+        landed_marketplace = _read_text(gh, MARKETPLACE_MANIFEST, sha)
+        landed_entries = parse_marketplace(landed_marketplace)
         landed = {path: _read_text(gh, path, sha) for path in files}
     except LibrarianError as exc:
         raise PublishFailed(
@@ -399,6 +515,23 @@ def _assert_the_change_reached_everyone(
             ),
         )
 
+    listed_version = next(
+        (
+            entry.version
+            for entry in landed_entries
+            if entry.name == plugin.name and entry.plugin_dir == plugin.plugin_dir
+        ),
+        None,
+    )
+    if listed_version != landed_version:
+        raise PublishFailed(
+            _MAY_NOT_HAVE_ARRIVED,
+            detail=(
+                f"{MARKETPLACE_MANIFEST} says {listed_version!r} for {plugin.name!r} after "
+                f"merging, not {landed_version}"
+            ),
+        )
+
     for path, content in files.items():
         if landed.get(path) != content:
             raise PublishFailed(
@@ -417,20 +550,19 @@ def _is_higher(candidate: str, previous: str) -> bool:
         return False
 
 
-def _remove_working_copy(gh: GitHubClient, branch: str) -> None:
-    """Take away the working copy this publish made, so a second attempt starts from nothing.
+def _remove_working_copy(gh: GitHubClient, branch: str) -> bool:
+    """Take away a working copy this publish made, so a second attempt starts from nothing.
 
-    Whatever went wrong is the thing the person needs to hear about, so a problem while tidying up
-    is swallowed rather than raised over the top of it. A client that offers no way to remove a
-    working copy simply leaves it in place.
+    Answers whether the working copy really did go away, so the caller knows whether there is
+    still something to tidy up later. Whatever went wrong is the thing the person needs to hear
+    about, so any problem while tidying up is swallowed rather than raised over the top of it,
+    and the answer is simply no.
     """
-    remove = getattr(gh, "delete_branch", None)
-    if not callable(remove):
-        return
     try:
-        remove(branch)
+        gh.delete_branch(branch)
     except Exception:  # noqa: BLE001 - the original failure is the one that matters
-        pass
+        return False
+    return True
 
 
 # ==============================================================================================
@@ -990,10 +1122,19 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", value.strip().lower()).strip("-")
 
 
-def _branch_name(cfg: Config, proposal: Proposal) -> str:
+def _branch_name(cfg: Config, proposal: Proposal, attempt: int = 0) -> str:
+    """The name of the working copy for this change, worked out from the change itself.
+
+    The same request always produces the same name, so a second try at the same change does not
+    leave a trail of near duplicates behind it. When the change has to be started again on a
+    newer starting point, the attempt number is added, which is still the same name every time
+    for the same sequence of events.
+    """
     skill = _slug(proposal.skill_name) or "skill"
     short_id = _slug(proposal.id)[:8] or "change"
     branch = f"{_BRANCH_PREFIX}{skill}-{short_id}"
+    if attempt > 0:
+        branch = f"{branch}-{attempt + 1}"
     if branch == cfg.default_branch:
         raise PublishFailed(
             "The change could not be given a working copy of its own, so nothing was published.",

@@ -103,6 +103,13 @@ _MSG_NO_DIRECT_TO_SHARED = (
     "A change has to be reviewed before it becomes part of the shared library, so "
     "I will not write it in directly. Nothing was published."
 )
+_MSG_NO_DELETING_SHARED = (
+    "That is the shared library that everyone reads from, so I will not remove it. "
+    "Nothing was changed."
+)
+_MSG_NO_BRANCH_NAMED = (
+    "I was not told which working copy to take away, so I left everything as it was."
+)
 
 
 def _error(
@@ -127,6 +134,14 @@ class GitHubClient(Protocol):
     def list_dir(self, path: str, ref: str) -> list[dict]: ...
 
     def create_branch(self, name: str, from_sha: str) -> None: ...
+
+    # Tidying up after a publish that fell over part way through. Branch names are worked
+    # out from the change itself, so the same request produces the same name every time. A
+    # leftover working branch therefore blocks the next attempt at the very moment somebody
+    # is retrying, which is why every client has to offer this rather than treat it as an
+    # extra. Removing the branch everyone reads from is refused outright, and a branch that
+    # has already gone is not a problem.
+    def delete_branch(self, name: str) -> None: ...
 
     def commit_files(
         self,
@@ -211,6 +226,25 @@ def _head_moved(response: httpx.Response) -> bool:
     except Exception:  # pragma: no cover - a body that cannot be decoded
         return False
     return "head branch was modified" in body or "did not match" in body
+
+
+def _branch_already_gone(response: httpx.Response) -> bool:
+    """True when a request to remove a branch found there was nothing left to remove.
+
+    GitHub answers a successful removal with no content at all. It answers one that was
+    already removed either by saying it could not be found, or by saying the reference does
+    not exist, and both of those mean the job is done. Anything else is a real problem and
+    is reported as one, so a permission problem is never mistaken for a tidy repository.
+    """
+    if response.status_code == 404:
+        return True
+    if response.status_code != 422:
+        return False
+    try:
+        body = response.text.lower()
+    except Exception:  # pragma: no cover - a body that cannot be decoded
+        return False
+    return "does not exist" in body or "not found" in body
 
 
 class _RestClient:
@@ -487,17 +521,23 @@ class _RestClient:
 
     # -- writing --------------------------------------------------------------
 
+    @staticmethod
+    def _branch_name_only(branch: str) -> str:
+        """The bare branch name, with spaces and any full reference prefix taken off."""
+        cleaned = (branch or "").strip()
+        if cleaned.startswith("refs/heads/"):
+            cleaned = cleaned[len("refs/heads/") :]
+        return cleaned.strip("/")
+
     def _is_shared_branch(self, branch: str) -> bool:
         """True when the name points at the branch the whole organization reads from.
 
         The comparison ignores surrounding spaces, an optional full reference prefix,
-        and letter case, so that none of those spellings can slip a direct write past
-        the check.
+        stray slashes, and letter case, so that none of those spellings can slip a write
+        past the check.
         """
-        cleaned = (branch or "").strip()
-        if cleaned.startswith("refs/heads/"):
-            cleaned = cleaned[len("refs/heads/") :]
-        return cleaned.casefold() == (self.default_branch or "").strip().casefold()
+        cleaned = self._branch_name_only(branch)
+        return cleaned.casefold() == self._branch_name_only(self.default_branch).casefold()
 
     def create_branch(self, name: str, from_sha: str) -> None:
         self._request(
@@ -506,6 +546,37 @@ class _RestClient:
             json_body={"ref": f"refs/heads/{name}", "sha": from_sha},
             writing=True,
         )
+
+    def delete_branch(self, name: str) -> None:
+        """Take away a working branch that a publish left behind.
+
+        Two things make this safe to call from a failure path.
+
+        The branch everyone reads from is refused outright, exactly the way committing on to
+        it is refused, so a wrong name can never take the shared library away.
+
+        A branch that is already gone counts as done rather than as a problem. This runs when
+        something else has already gone wrong, and the person needs to hear about that, not
+        about the tidying up afterwards.
+        """
+        if self._is_shared_branch(name):
+            raise _error(PublishFailed, _MSG_NO_DELETING_SHARED)
+        branch = self._branch_name_only(name)
+        if not branch:
+            raise _error(PublishFailed, _MSG_NO_BRANCH_NAMED)
+
+        headers = self._base_headers()
+        headers["Authorization"] = self._auth_header()
+        response = self._send(
+            "DELETE",
+            self._repo_url(f"/git/refs/heads/{branch}"),
+            headers=headers,
+            writing=True,
+        )
+        if _branch_already_gone(response):
+            _LOG.debug("Working branch %s was already gone", branch)
+            return
+        self._raise_for_status(response, writing=True)
 
     def commit_files(
         self,
