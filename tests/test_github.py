@@ -110,6 +110,9 @@ def git_data_handler(
     branch_head_now: str | None = None,
     delete_status: int = 204,
     delete_message: str = "Reference does not exist",
+    close_status: int = 200,
+    close_message: str = "Reference does not exist",
+    parents: list[str] | None = None,
 ) -> Callable[[httpx.Request], httpx.Response]:
     """Answers the whole branch, commit, pull request and merge conversation.
 
@@ -162,6 +165,20 @@ def git_data_handler(
             )
         if path.endswith("/pulls") and request.method == "POST":
             return json_response({"number": 17}, status=201)
+        if re.search(r"/pulls/\d+$", path) and request.method == "PATCH":
+            # GitHub answers a change it withdrew, and one that was already withdrawn, with
+            # the change itself.
+            if close_status == 200:
+                return json_response({"number": 17, "state": "closed"})
+            return json_response({"message": close_message}, status=close_status)
+        if re.search(r"/repos/[^/]+/[^/]+/commits/[^/]+$", path) and request.method == "GET":
+            named = [] if parents is None else parents
+            return json_response(
+                {
+                    "sha": path.rsplit("/", 1)[-1],
+                    "parents": [{"sha": parent} for parent in named],
+                }
+            )
         if path.endswith("/merge") and request.method == "PUT":
             if merge_status != 200:
                 return json_response({"message": merge_message}, status=merge_status)
@@ -975,6 +992,280 @@ def test_a_real_problem_while_tidying_up_is_still_reported(
 
     with pytest.raises(kind) as failure:
         app_client(api, rsa_key).delete_branch("librarian/onboarding-ab12")
+
+    assert_plain_english(failure.value.user_message)
+
+
+# ---------------------------------------------------------------------------
+# withdrawing a change that was put forward for review and is not going to be published
+# ---------------------------------------------------------------------------
+
+
+def withdrawals(api: RecordingAPI) -> list[str]:
+    """Every change this client actually asked GitHub to withdraw from review."""
+    return [
+        request.url.path
+        for request in api.requests
+        if request.method == "PATCH" and re.search(r"/pulls/\d+$", request.url.path)
+    ]
+
+
+def test_withdrawing_a_change_from_review_is_part_of_the_contract(
+    rsa_key: tuple[str, Any]
+) -> None:
+    """A change left sitting there after a failed publish is a proposal nobody meant to leave.
+
+    The working copy it points at has already been taken away, so at best it reads as something
+    half finished. If taking the working copy away failed as well, it is a live proposal to merge
+    something that was never agreed to. Leaving this out of the contract is what let the same
+    class of bug through for taking a working copy away, so it is said here in its own right.
+    """
+    assert "close_pr" in GitHubClient.__protocol_attrs__, (
+        "withdrawing a change from review has to be part of the contract, or a client can leave "
+        "it out and the tidying up after a failed publish silently does nothing"
+    )
+    api = RecordingAPI(git_data_handler())
+    assert callable(getattr(app_client(api, rsa_key), "close_pr", None))
+
+
+def test_close_pr_asks_github_to_withdraw_that_one_change(rsa_key: tuple[str, Any]) -> None:
+    api = RecordingAPI(git_data_handler())
+
+    app_client(api, rsa_key).close_pr(17)
+
+    assert withdrawals(api) == [f"/repos/{OWNER}/{REPO}/pulls/17"], (
+        "the change has to actually be withdrawn, or it stays there as a proposal to merge "
+        "something nobody meant to leave behind"
+    )
+    assert api.body_for("PATCH", "/pulls/17") == {"state": "closed"}
+
+
+def test_the_development_client_withdraws_a_change_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LIBRARIAN_DEV_TOKEN", "dev-token-value")
+    api = RecordingAPI(git_data_handler())
+    with pytest.warns(RuntimeWarning):
+        client = TokenClient(OWNER, REPO, http_client=api.client())
+
+    client.close_pr(17)
+
+    assert withdrawals(api) == [f"/repos/{OWNER}/{REPO}/pulls/17"]
+
+
+@pytest.mark.parametrize(
+    "status,message",
+    [
+        (200, "already closed"),
+        (404, "Not Found"),
+        (422, "Reference does not exist"),
+        (422, "This pull request is already closed"),
+    ],
+)
+def test_a_change_that_is_already_withdrawn_is_not_an_error(
+    rsa_key: tuple[str, Any], status: int, message: str
+) -> None:
+    """Tidying up runs when something else has already gone wrong.
+
+    The person needs to hear about that first problem. A complaint that the change was already
+    withdrawn, or was never there, would bury it, and being gone is the outcome that was wanted.
+    """
+    api = RecordingAPI(git_data_handler(close_status=status, close_message=message))
+
+    app_client(api, rsa_key).close_pr(17)
+
+    assert withdrawals(api) == [f"/repos/{OWNER}/{REPO}/pulls/17"], (
+        "quiet success still has to mean the request was really made"
+    )
+
+
+@pytest.mark.parametrize(
+    "status,message,kind",
+    [
+        (500, "Server Error", PublishFailed),
+        (403, "Resource not accessible by integration", NotAuthorized),
+        (422, "Validation failed for something else entirely", PublishFailed),
+        # The hard one. A library that is unwell can say something that reads like the change
+        # being gone while the request in fact failed. Only the two answers that can really mean
+        # already withdrawn are read as such; every other answer is reported however it is worded.
+        (500, "The pull request could not be found right now", PublishFailed),
+        (502, "Reference does not exist", PublishFailed),
+    ],
+)
+def test_a_real_problem_while_withdrawing_a_change_is_still_reported(
+    rsa_key: tuple[str, Any], status: int, message: str, kind: type[LibrarianError]
+) -> None:
+    """Only a change that has gone is quiet. Everything else is said out loud.
+
+    A blanket silence here would turn a lost permission into a library slowly filling with
+    changes waiting for review that nobody ever hears about.
+    """
+    api = RecordingAPI(git_data_handler(close_status=status, close_message=message))
+
+    with pytest.raises(kind) as failure:
+        app_client(api, rsa_key).close_pr(17)
+
+    assert_plain_english(failure.value.user_message)
+
+
+def test_withdrawing_without_a_named_change_never_reaches_github(
+    rsa_key: tuple[str, Any]
+) -> None:
+    """A change is named by its number, and nothing else stands in for one.
+
+    True counts as the number one everywhere else in this language, so a caller that passed it
+    by mistake would withdraw whichever change happens to be numbered one. That is somebody
+    else's change, and withdrawing it is exactly the kind of quiet damage this service must
+    never do while tidying up after itself.
+    """
+    api = RecordingAPI(git_data_handler())
+    client = app_client(api, rsa_key)
+
+    for not_a_change in [0, -1, True]:
+        with pytest.raises(PublishFailed) as failure:
+            client.close_pr(not_a_change)  # type: ignore[arg-type]
+        assert_plain_english(failure.value.user_message)
+
+    assert withdrawals(api) == [], "nothing may be sent at all when no change is named"
+
+
+# ---------------------------------------------------------------------------
+# what a saved change was built on
+# ---------------------------------------------------------------------------
+
+
+def commit_reads(api: RecordingAPI) -> list[str]:
+    """Every saved change this client actually asked GitHub about."""
+    return [
+        request.url.path
+        for request in api.requests
+        if request.method == "GET"
+        and re.search(rf"/repos/{OWNER}/{REPO}/commits/.+$", request.url.path)
+    ]
+
+
+def test_what_a_saved_change_was_built_on_is_part_of_the_contract(
+    rsa_key: tuple[str, Any]
+) -> None:
+    assert "commit_parents" in GitHubClient.__protocol_attrs__, (
+        "checking what a merge really carried has to be part of the contract, or a client can "
+        "leave it out and the check silently does nothing"
+    )
+    api = RecordingAPI(git_data_handler())
+    assert callable(getattr(app_client(api, rsa_key), "commit_parents", None))
+
+
+def test_commit_parents_keeps_the_order_it_was_given(rsa_key: tuple[str, Any]) -> None:
+    """The first one is the copy that was merged into, so the order carries the meaning."""
+    api = RecordingAPI(git_data_handler(parents=["the-shared-copy", "the-change"]))
+
+    found = app_client(api, rsa_key).commit_parents("mergesha")
+
+    assert found == ["the-shared-copy", "the-change"], (
+        "the order says which side was merged into which, so it may not be sorted or thinned out"
+    )
+    assert commit_reads(api) == [f"/repos/{OWNER}/{REPO}/commits/mergesha"]
+
+
+def test_commit_parents_refuses_an_answer_carrying_an_empty_list_of_parents(
+    rsa_key: tuple[str, Any]
+) -> None:
+    """An answer that records nothing is refused, not handed back as an empty one.
+
+    The contract says so, and the reason is the caller. The only thing that asks what a saved
+    change was built on is the check on what a merge really carried, and an empty answer cannot
+    honestly answer that question: it either means the answer was the wrong shape all along, or
+    it means the change being asked about is the very first one in the library and therefore not
+    a merge at all. Handing back an empty list makes those two cases look identical, and a caller
+    that reads it would be told, perfectly calmly, that the merge carried nothing.
+    """
+    api = RecordingAPI(git_data_handler(parents=[]))
+
+    with pytest.raises(LibrarianError) as failure:
+        app_client(api, rsa_key).commit_parents("firstchange")
+
+    assert_plain_english(failure.value.user_message)
+
+
+def test_commit_parents_refuses_an_answer_that_is_not_one_saved_change(
+    rsa_key: tuple[str, Any]
+) -> None:
+    """The trap this guards, spelled out.
+
+    Asking GitHub about the changes to a library, rather than about one saved change, comes back
+    as a list. Reading a list as a saved change gives an answer that looks exactly like a change
+    built on nothing at all, and a caller checking what a merge carried would then be told,
+    perfectly calmly, that it carried nothing. So a wrongly shaped answer is refused out loud
+    rather than flattened into an empty one.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        if re.search(rf"/repos/{OWNER}/{REPO}/commits/.+$", request.url.path):
+            return json_response([{"sha": "one"}, {"sha": "two"}])
+        return git_data_handler()(request)
+
+    api = RecordingAPI(handler)
+    with pytest.raises(LibrarianError) as failure:
+        app_client(api, rsa_key).commit_parents("mergesha")
+
+    assert_plain_english(failure.value.user_message)
+
+
+def test_commit_parents_refuses_an_answer_that_records_no_parents_at_all(
+    rsa_key: tuple[str, Any]
+) -> None:
+    """A saved change that simply does not say what it was built on is unreadable, not empty."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if re.search(rf"/repos/{OWNER}/{REPO}/commits/.+$", request.url.path):
+            return json_response({"sha": "mergesha"})
+        return git_data_handler()(request)
+
+    api = RecordingAPI(handler)
+    with pytest.raises(LibrarianError) as failure:
+        app_client(api, rsa_key).commit_parents("mergesha")
+
+    assert_plain_english(failure.value.user_message)
+
+
+def test_commit_parents_refuses_a_parent_it_cannot_name(rsa_key: tuple[str, Any]) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if re.search(rf"/repos/{OWNER}/{REPO}/commits/.+$", request.url.path):
+            return json_response({"sha": "mergesha", "parents": [{"sha": "one"}, {}]})
+        return git_data_handler()(request)
+
+    api = RecordingAPI(handler)
+    with pytest.raises(LibrarianError) as failure:
+        app_client(api, rsa_key).commit_parents("mergesha")
+
+    assert_plain_english(failure.value.user_message)
+
+
+def test_commit_parents_without_a_named_change_never_reaches_github(
+    rsa_key: tuple[str, Any]
+) -> None:
+    """A name that is empty, or that carries a slash, would ask about something else entirely.
+
+    An empty name asks GitHub for the whole list of changes instead of for one of them, and a
+    name with a slash in it can walk off to a different part of the library altogether. Neither
+    is sent at all.
+    """
+    api = RecordingAPI(git_data_handler(parents=["a", "b"]))
+    client = app_client(api, rsa_key)
+
+    for not_a_change in ["", "   ", "../pulls/1", "a/b", "sha with spaces", "sha?ref=main"]:
+        with pytest.raises(LibrarianError) as failure:
+            client.commit_parents(not_a_change)
+        assert_plain_english(failure.value.user_message)
+
+    assert commit_reads(api) == [], "nothing may be sent at all when no saved change is named"
+
+
+def test_commit_parents_reports_a_saved_change_it_cannot_find(rsa_key: tuple[str, Any]) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return json_response({"token": FAKE_TOKEN, "expires_at": "2099-01-01T00:00:00Z"})
+        return json_response({"message": "Not Found"}, status=404)
+
+    api = RecordingAPI(handler)
+    with pytest.raises(SkillNotFound) as failure:
+        app_client(api, rsa_key).commit_parents("nosuchchange")
 
     assert_plain_english(failure.value.user_message)
 

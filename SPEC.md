@@ -175,7 +175,9 @@ class GitHubClient(Protocol):
                      author_name: str, author_email: str) -> str    # returns commit sha
     def open_pr(self, head: str, base: str, title: str, body: str) -> int
     def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str
+    def close_pr(self, number: int) -> None
     def list_commits(self, path: str, limit: int) -> list[dict]
+    def commit_parents(self, sha: str) -> list[str]
 ```
 Two implementations: `GitHubAppClient` (production - a GitHub App private key, minting short-lived
 installation tokens, scoped to the single repository) and `TokenClient` (development only, reads
@@ -196,6 +198,31 @@ request produces the same name every time. Two rules:
 - Deleting a branch that is already gone succeeds quietly. Cleanup runs on a path where something
   has already failed, and it must never replace that failure with a complaint of its own. Anything
   else, including a permission problem, is still reported.
+
+`close_pr` withdraws a pull request that was opened and is not going to be published, via
+`PATCH /repos/{owner}/{repo}/pulls/{number}` with state `closed`. It exists because a failure after
+the pull request was opened used to leave it open. The branch is deleted, so the leftover pull
+request points at a branch that is no longer there, which is confusing at best; and if the branch
+deletion also failed, it is a live mergeable proposal nobody meant to leave behind. The same two
+rules as `delete_branch` apply, for the same reason:
+- Closing a pull request that is already closed, or that is not there at all, succeeds quietly. This
+  runs on a path where something has already gone wrong, and that first failure is the one the
+  person needs to hear about.
+- Anything else is still reported, a lost permission most of all. A blanket silence would leave the
+  repository filling with open pull requests nobody ever hears about.
+- A number that does not name a pull request sends nothing at all. `True` counts as the number one
+  in Python, so a caller that passed it by mistake would otherwise withdraw whichever pull request
+  is numbered one, which is somebody else's.
+
+`commit_parents` returns the parent shas of a commit via `GET /repos/{owner}/{repo}/commits/{sha}`,
+in the order GitHub gives them. The first parent is the branch that was merged into and the rest are
+what was merged in, which is how a merge can be checked for what it actually merged rather than for
+what it was meant to merge. The order carries that meaning, so it is never sorted or deduplicated. A
+commit that cannot be named sends nothing at all: an empty sha would ask GitHub for the whole commit
+list instead of for one commit, and a list read as a commit looks exactly like a commit with no
+parents. An answer of the wrong shape, or one that records no parents at all, is refused out loud
+rather than flattened into an empty list, because a caller checking what a merge carried would
+otherwise be told calmly that it carried nothing.
 
 **Attribution is the point.** Commits set the git AUTHOR to the human who asked
 (`author_name`, `author_email`) while the COMMITTER is the app. This is how the history names the
@@ -233,8 +260,24 @@ The readback after the merge is damage detection only. It confirms what landed a
 that already happened; it can never be the thing that prevents it, because by then the content is on
 the branch everyone reads from. Detecting a bad merge is not the same as refusing one.
 
+**A rebuild must refuse when an approved file changed underneath it.** When the default branch has
+moved, `publish` may start its working branch again from where the default branch now stands and
+re-commit the approved content there. That rebuild silently destroys somebody else's work whenever
+the two changes touched the same file: the approved content is whole-file content, so writing it on
+top of a newer starting point replaces whatever that file now holds, and the other person's edit is
+gone with no conflict, no error, and nothing in the result that says it ever existed. So before
+rebuilding, `publish` re-reads every file the proposal writes as it stands on the new starting point
+and compares it to how that same file stood at `base_sha`. If any one of them differs, it raises
+`PublishFailed` and does not rebuild, telling the person in plain English that somebody else changed
+the same wording and that the change needs to be prepared again from the latest copy. Proving that a
+rebuild leaves alone a file this change never touched proves nothing at all; the case that destroys
+work is the one where both sides edited the SAME file, and that is the case the guard and its test
+must be about.
+
 If anything fails after the branch was created, `publish` calls `delete_branch` so the same proposal
-can be tried again without colliding on the branch name. A failure while cleaning up is swallowed,
+can be tried again without colliding on the branch name. If the failure happened after the pull
+request was opened, `publish` also calls `close_pr`, so the attempt does not leave an open pull
+request pointing at a branch that has just been taken away. A failure while cleaning up is swallowed,
 because the original failure is what the person needs to hear about.
 
 ### `src/librarian/service.py`
@@ -266,7 +309,13 @@ Use pytest. A fake in-memory `GitHubClient` for everything. Required tests, at m
 - Every stand-in offers every method the `GitHubClient` contract offers, spelled the same way, so a
   test can never be green about behaviour production does not have.
 - A failed publish takes its working branch away, and the same proposal can then be published again.
+- A publish that fails after the pull request was opened leaves no open pull request behind.
 - Deleting the default branch is refused; deleting a branch that is already gone is not an error.
+- Closing a pull request that is already closed, or that is not there, is not an error; a permission
+  problem or a server problem while closing one still is, however the answer happens to be worded.
+- A rebuild onto a newer starting point is refused when somebody else changed one of the very files
+  this change writes, proved by that file still holding their content afterwards and by the publish
+  having raised. A rebuild that only leaves untouched files alone is not evidence of anything.
 - Approving with a stale or altered `diff_hash` is refused.
 - An expired proposal is refused.
 - Path traversal, absolute paths, and writes to `.github/` or the manifests are all refused.

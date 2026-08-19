@@ -26,9 +26,22 @@ does not happen at all. That comparison is the guard, and refusing is the only t
 merging and then noticing would put the wording on the shared copy under a number that had already
 gone out, and everyone holding that number would keep what they have forever.
 
+Starting the working copy again is only safe while nobody else has touched the very files this
+change writes. The agreed wording is the whole of each file rather than the few lines that changed
+inside it, so writing it onto a newer starting point replaces whatever somebody else put there in
+the meantime, with nothing to clash over and nothing anywhere to say their work ever existed. So
+before starting again, every file this change writes is read as it stands now and compared with how
+it stood on the copy the change was agreed against. If any one of them has moved, the publish
+refuses and says so, and the person is asked to prepare the change again from the newer copy. Two
+people's wording is never put together on their behalf.
+
 After the merge the shared copy is read one final time. That last read is damage detection and
 nothing more. It confirms what arrived and tells the person plainly when something is wrong, but it
 comes too late to stop anything, so it is never the thing that keeps a bad publish from happening.
+What the number that arrived is measured against is the copy the merge was really built on, read
+from the merge itself, rather than a number sampled a moment before it. Another change can land in
+that gap and take the shared copy to the very number this change was going to ship, and the older
+sample would call that a success while everybody holding that number keeps the wording they have.
 """
 
 from __future__ import annotations
@@ -157,6 +170,12 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
     # a second one.
     working_copies: list[str] = [branch]
 
+    # Every change this publish puts forward for review. If the publish then falls over, each one
+    # is withdrawn, because a change waiting for review whose working copy has just been taken
+    # away is a proposal to merge something nobody meant to leave behind.
+    changes_put_forward: list[int] = []
+    the_change_was_merged = False
+
     # From here on a working copy exists, so every way out of this function that is not a finished
     # publish takes that working copy away again. Otherwise a second attempt at the same change
     # runs into the leftovers of the first one and cannot even start.
@@ -195,6 +214,18 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
             shared_version = _current_version(shared_plugin_manifest, plugin)
             if _is_higher(new_version, shared_version):
                 break
+
+            # THE GUARD ON SOMEBODY ELSE'S WORDING. Starting again from where the shared copy
+            # now stands means writing the agreed wording on top of a newer starting point, and
+            # the agreed wording is the whole file rather than the few lines that changed in it.
+            # So if somebody else edited one of these very files while this change was waiting,
+            # writing it now would replace their wording with this one. Nothing would clash,
+            # nothing would fail, and their work would simply be gone, while the person who took
+            # it away was told the publish worked. Refusing is the only honest answer, and
+            # putting two people's wording together is not something to attempt on their behalf.
+            _assert_nobody_else_changed_these_files(
+                gh, files_to_write, proposal.base_sha, shared_sha
+            )
 
             attempts += 1
             if attempts > _MAX_VERSION_ATTEMPTS:
@@ -255,6 +286,7 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
                 "merging, so nothing has been changed for anyone yet. Please try again.",
                 detail=f"open_pr failed: {exc}",
             ) from exc
+        changes_put_forward.append(pr_number)
 
         # Step 6b. THE GUARD. Look at the shared copy one final time, in the last moment before
         # the merge, and compare the number this change is about to ship against the number that
@@ -267,8 +299,26 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
         # it, because the number that tells Claude to fetch it did not move. So the merge does not
         # happen at all. Nothing at this point can start the working copy over, because the change
         # has already been put forward for review from it, so the only honest answer is to refuse.
+        shared_copy_now = _shared_copy_head(gh, cfg)
+
+        # THE GUARD ON SOMEBODY ELSE'S WORDING, ASKED ONE LAST TIME. The version number is not
+        # the only thing that can move. Somebody can change the very files this change writes
+        # without touching the version number at all, and then nothing above would have looked.
+        #
+        # It matters because merging is not the same as replacing. Where the two of them changed
+        # different parts of the same file, a merge puts both sets of words into it and calls
+        # that a success, and what lands is a paragraph of theirs next to a paragraph of this
+        # one: wording nobody wrote, nobody read and nobody agreed to, going out under this
+        # change's version number. Where they changed the same part, the merge cannot be done at
+        # all and somebody is told to try again, over and over, because trying again does exactly
+        # the same thing. Both of those are refused here instead, in words that say what actually
+        # happened and what to do about it.
+        _assert_nobody_else_changed_these_files(
+            gh, files_to_write, proposal.base_sha, shared_copy_now
+        )
+
         version_just_before_merge = _current_version(
-            _read_manifest(gh, plugin.manifest_path, _shared_copy_head(gh, cfg)), plugin
+            _read_manifest(gh, plugin.manifest_path, shared_copy_now), plugin
         )
         if not _is_higher(new_version, version_just_before_merge):
             raise PublishFailed(
@@ -288,7 +338,7 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
         # into the shared copy makes a change reach people, and naming the change means a working
         # copy that was altered after it was agreed to is refused rather than published.
         try:
-            gh.merge_pr(pr_number, title, commit_sha)
+            merge_sha = gh.merge_pr(pr_number, title, commit_sha)
         except LibrarianError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -297,27 +347,53 @@ def publish(gh: GitHubClient, cfg: Config, proposal: Proposal, bump: str = "patc
                 "anyone yet. Nothing in the shared skills has changed. Please try again.",
                 detail=f"merge_pr failed: {exc}",
             ) from exc
+        the_change_was_merged = True
 
         # Step 6d. Read the shared copy back. THIS IS DAMAGE DETECTION, NOT THE GUARD. By now the
         # wording is already on the copy everyone reads from, so nothing here can prevent a bad
         # publish; it can only notice one and say so. The refusal in step 6b is what keeps a merge
         # from happening under a number that did not move, and this must never be mistaken for it.
+        #
+        # What is read back is this merge itself, and what it is measured against is the copy it
+        # was really put on top of, which is the first copy the merge was built on. Neither of
+        # those can move afterwards. Reading whatever the shared copy holds by now instead would
+        # be looking at somebody else's change: one that landed in the gap can hide damage this
+        # merge did, by supplying a version number this merge dropped, and can equally raise a
+        # false alarm about a merge that was perfect, by revising the very wording just published.
+        built_on_sha, version_this_was_put_on_top_of = _what_the_merge_was_built_on(
+            gh, plugin, merge_sha
+        )
         _assert_the_change_reached_everyone(
-            gh, cfg, plugin, files_to_write, version_just_before_merge
+            gh,
+            cfg,
+            plugin,
+            files_to_write,
+            merge_sha,
+            built_on_sha,
+            version_this_was_put_on_top_of,
         )
 
     except BaseException:
-        # The reason this publish failed is what the person needs to hear, so taking the working
-        # copies away is never allowed to replace it with a different error.
+        # The reason this publish failed is what the person needs to hear, so tidying up is never
+        # allowed to replace it with a different error.
+        #
+        # The change is withdrawn from review first and the working copies are taken away second.
+        # Doing it the other way round leaves a change sitting there for review that points at a
+        # working copy that is already gone.
+        if not the_change_was_merged:
+            for waiting in changes_put_forward:
+                _withdraw_from_review(gh, waiting)
         for leftover in working_copies:
             _remove_working_copy(gh, leftover)
         raise
 
-    # Step 7. Anything left over from starting the change again is taken away, so a working copy
-    # nobody is using does not sit there for good after a publish that worked.
+    # Step 7. The working copies are taken away, including the one that was just merged. Its
+    # wording is on the shared copy now, so the copy it was written on has nothing left to say,
+    # and leaving it behind would fill the library with working copies nobody is using. This
+    # happens after the publish worked, so a working copy that will not go away is not worth
+    # troubling anybody about.
     for leftover in working_copies:
-        if leftover != branch:
-            _remove_working_copy(gh, leftover)
+        _remove_working_copy(gh, leftover)
 
     return PublishResult(
         commit_sha=commit_sha,
@@ -443,6 +519,144 @@ def _shared_copy_manifest(
     return sha, _read_manifest(gh, plugin.manifest_path, sha)
 
 
+def _file_as_it_stood(gh: GitHubClient, path: str, ref: str) -> str | None:
+    """What one file held at one exact copy of the library, or nothing if it was not there yet.
+
+    A file that is not there is an answer in its own right, because a change can add a file that
+    nobody had written before. Anything else that goes wrong while reading is not turned into
+    that answer: a file that could not be read is not a file that is known to be unchanged, and
+    treating the two the same would let a publish walk straight over somebody else's wording on
+    the strength of a network that was having a bad moment.
+    """
+    try:
+        text, _blob_sha = gh.get_file(path, ref)
+    except SkillNotFound:
+        return None
+    except FileNotFoundError:
+        return None
+    except LibrarianError as exc:
+        raise _publish_failure(exc) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise PublishFailed(
+            "The latest copy of these skills could not be read, so nothing was published and "
+            "nothing has been changed for anyone. Please try again.",
+            detail=f"could not read {path} at {ref}: {exc}",
+        ) from exc
+
+    if not isinstance(text, str):
+        raise PublishFailed(
+            "The latest copy of these skills could not be read, so nothing was published and "
+            "nothing has been changed for anyone. Please try again.",
+            detail=f"{path} at {ref} was {type(text).__name__}, not text",
+        )
+    return text
+
+
+def _assert_nobody_else_changed_these_files(
+    gh: GitHubClient,
+    files_to_write: dict[str, str],
+    base_sha: str,
+    shared_sha: str,
+) -> None:
+    """Refuse to write the agreed wording on top of somebody else's newer wording.
+
+    The agreed wording is the whole of each file, not the handful of lines that changed inside
+    it. So writing it onto a newer starting point does not merge with what somebody else wrote
+    there in the meantime, it replaces it, and nothing anywhere would say that had happened.
+
+    Every file this change writes is read as it stands on the newer starting point and compared
+    with how it stood on the copy the change was agreed against. A file somebody else has since
+    edited stops the publish. So does a file this change would add that somebody else has since
+    added, because writing over it would throw their version of it away just the same.
+
+    One thing does not stop it: a file somebody else has moved to exactly the wording this change
+    was going to give it. Nothing of theirs is lost by writing what is already written, and
+    stopping there would send somebody off to prepare a change with nothing left in it while the
+    wording sat on the shared copy waiting for a version number that never came.
+    """
+    if base_sha == shared_sha:
+        return
+
+    for path, agreed in sorted(files_to_write.items()):
+        was = _file_as_it_stood(gh, path, base_sha)
+        now = _file_as_it_stood(gh, path, shared_sha)
+        if now == was:
+            continue
+        if now == agreed:
+            # Somebody else put this file into exactly the state this change was going to put it
+            # into, word for word. There is nothing of theirs to lose by writing it, because what
+            # would be written is what is already there. Refusing here would send somebody away
+            # to prepare a change that has nothing left to change, and if the wording landed
+            # without the version number moving it would sit there undelivered for good.
+            continue
+        raise PublishFailed(
+            "Somebody else changed this skill while this change was waiting, so publishing now "
+            "would quietly replace their wording with this one and their work would be lost. "
+            "Nothing has been changed for anyone. Please ask for the change again: it will start "
+            "from their version, so neither piece of work is lost.",
+            detail=f"{path} is not what it was on the copy this change was agreed against",
+        )
+
+
+def _what_the_merge_was_built_on(
+    gh: GitHubClient, plugin: PluginRef, merge_sha: str
+) -> tuple[str, str]:
+    """The copy the merge was really put on top of, and the version number that copy carried.
+
+    A merge records what it was built on, first the copy that was merged into and then the
+    copies that were merged in. The first of those is what this change actually landed on top
+    of, so it is the only fair thing to measure the landed version number against. A number
+    sampled a moment before the merge is not the same thing: another change can land in the gap
+    and take the shared copy to the very number this change was going to ship, and measuring
+    against the older sample would call that a success while everybody holding that number quietly
+    keeps the wording they already have.
+    """
+    if not isinstance(merge_sha, str) or not merge_sha.strip():
+        raise PublishFailed(
+            _MAY_NOT_HAVE_ARRIVED,
+            detail=f"merge_pr answered with {merge_sha!r}, which names nothing",
+        )
+
+    try:
+        parents = gh.commit_parents(merge_sha.strip())
+    except LibrarianError as exc:
+        raise PublishFailed(
+            _MAY_NOT_HAVE_ARRIVED,
+            detail=f"could not read what the merge was built on: {exc.detail or exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise PublishFailed(
+            _MAY_NOT_HAVE_ARRIVED,
+            detail=f"could not read what the merge was built on: {exc}",
+        ) from exc
+
+    if not isinstance(parents, list) or not parents:
+        raise PublishFailed(
+            _MAY_NOT_HAVE_ARRIVED,
+            detail="the merge did not say what it was built on",
+        )
+    first_parent = parents[0]
+    if not isinstance(first_parent, str) or not first_parent.strip():
+        raise PublishFailed(
+            _MAY_NOT_HAVE_ARRIVED,
+            detail=f"the merge named {first_parent!r} as what it was built on",
+        )
+
+    built_on = first_parent.strip()
+    try:
+        return built_on, _current_version(
+            _read_manifest(gh, plugin.manifest_path, built_on), plugin
+        )
+    except LibrarianError as exc:
+        raise PublishFailed(
+            _MAY_NOT_HAVE_ARRIVED,
+            detail=(
+                "could not read the version on the copy the merge was built on: "
+                f"{exc.detail or exc}"
+            ),
+        ) from exc
+
+
 def _assert_version_moved(new_version: str, old_version: str) -> None:
     """Refuse a publish whose version number would stay where it is.
 
@@ -469,27 +683,125 @@ _MAY_NOT_HAVE_ARRIVED = (
 )
 
 
+#: A stop on how far back along the shared copy this will look for the merge it just made.
+#: This is not what normally ends the walk. Every change that lands on the shared copy is put
+#: on top of where the shared copy stood, so following that line back always arrives either at
+#: this merge or at the copy this merge was built on, and both of those end it. The stop is
+#: here only so that a history of an unexpected shape cannot turn a check into an endless one.
+#: It is set high enough that no ordinary run of publishes could reach it, because a stop that
+#: a busy library could hit would raise a false alarm about a merge that was perfectly fine.
+_MAX_STEPS_LOOKING_FOR_THE_MERGE = 500
+
+
+def _assert_the_merge_is_on_the_shared_copy(
+    gh: GitHubClient, cfg: Config, merge_sha: str, built_on_sha: str
+) -> None:
+    """Prove this merge really is on the copy everyone reads from.
+
+    Reading the merge itself is what makes the rest of the check honest, because nobody can move
+    a saved change once it is made. It is also what makes this step necessary: a merge that
+    answered with a saved change and never actually moved the shared copy would be read back in
+    loving detail and found perfect, while not one person ever saw it.
+
+    So the shared copy is asked where it stands. Nearly always it stands exactly on this merge and
+    there is nothing more to do. If it has moved on, the changes that landed afterwards are walked
+    back through, each one by the copy it was put on top of, until this merge is found. Walking by
+    the first copy is what makes this work: every later change was put on top of the shared copy as
+    it stood, so following that line back is following the shared copy's own history. Not finding
+    it means it is not there, and a merge that is not there reached nobody.
+    """
+    where_it_stands = _shared_copy_head(gh, cfg)
+    if where_it_stands == merge_sha:
+        return
+
+    if where_it_stands == built_on_sha:
+        raise PublishFailed(
+            _MAY_NOT_HAVE_ARRIVED,
+            detail=(
+                "the shared copy still stands exactly where the merge was built on, so the merge "
+                "never reached it"
+            ),
+        )
+
+    walked = where_it_stands
+    for _step in range(_MAX_STEPS_LOOKING_FOR_THE_MERGE):
+        try:
+            parents = gh.commit_parents(walked)
+        except LibrarianError as exc:
+            raise PublishFailed(
+                _MAY_NOT_HAVE_ARRIVED,
+                detail=(
+                    "could not follow the shared copy back to the merge: "
+                    f"{exc.detail or exc}"
+                ),
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise PublishFailed(
+                _MAY_NOT_HAVE_ARRIVED,
+                detail=f"could not follow the shared copy back to the merge: {exc}",
+            ) from exc
+
+        if not isinstance(parents, list) or not parents:
+            raise PublishFailed(
+                _MAY_NOT_HAVE_ARRIVED,
+                detail="the shared copy's history ran out before the merge was found",
+            )
+        first_parent = parents[0]
+        if not isinstance(first_parent, str) or not first_parent.strip():
+            raise PublishFailed(
+                _MAY_NOT_HAVE_ARRIVED,
+                detail=f"the shared copy named {first_parent!r} as what it was built on",
+            )
+        walked = first_parent.strip()
+        if walked == merge_sha:
+            return
+        if walked == built_on_sha:
+            # The line the shared copy really followed goes straight past this merge to the copy
+            # it was built on, so this merge is not on the shared copy at all.
+            break
+
+    raise PublishFailed(
+        _MAY_NOT_HAVE_ARRIVED,
+        detail="the merge is not on the shared copy",
+    )
+
+
 def _assert_the_change_reached_everyone(
     gh: GitHubClient,
     cfg: Config,
     plugin: PluginRef,
     files: dict[str, str],
-    version_before_merge: str,
+    merge_sha: str,
+    built_on_sha: str,
+    version_the_merge_was_built_on: str,
 ) -> None:
-    """Read the shared copy back and prove every part of a real delivery arrived.
+    """Read this merge back and prove every part of a real delivery arrived.
 
     This runs after the merge, so it is damage detection and nothing more. It can say that
     something went wrong; it cannot stop it. What keeps a change from being merged under a
     version number that did not move is the refusal before the merge, not this.
 
-    Three things have to be true. The wording has to be there. The collection's own version
-    number has to be higher than it was a moment before, because that number is the only thing
-    that tells Claude to pick the wording up. And the library's list has to be carrying the same
-    number for that collection, because the two are meant to stay in step and a check that only
-    looks at one of them proves half of what it claims to prove.
+    What is read is this merge, and what it is measured against is the copy the merge was put on
+    top of. Both are fixed points that nobody can move afterwards. Reading whatever the shared
+    copy holds by the time this runs would be reading somebody else's change instead, and that
+    cuts both ways. A change landing in the gap can supply a version number this merge dropped,
+    and the damage this check exists to notice would be reported as a success. It can equally
+    revise the very wording just published, and a merge that was perfect would be reported to the
+    person as one that may never have arrived.
+
+    Four things have to be true. The merge has to be on the shared copy, because a merge that
+    answered with a saved change and never reached the copy everyone reads from reached nobody,
+    and reading that saved change on its own would describe it in loving detail regardless. The
+    wording has to be there. The collection's own version number has to be higher than the number
+    on the copy the merge was built on, because that number is the only thing that tells Claude to
+    pick the wording up. And the library's list has to be carrying the same number for that
+    collection, because the two are meant to stay in step and a check that only looks at one of
+    them proves half of what it claims to prove.
     """
+    _assert_the_merge_is_on_the_shared_copy(gh, cfg, merge_sha, built_on_sha)
+
     try:
-        sha = _shared_copy_head(gh, cfg)
+        sha = merge_sha
         manifest = _read_manifest(gh, plugin.manifest_path, sha)
         landed_version = _current_version(manifest, plugin)
         landed_marketplace = _read_text(gh, MARKETPLACE_MANIFEST, sha)
@@ -506,12 +818,12 @@ def _assert_the_change_reached_everyone(
             detail=f"could not read the shared copy back after merging: {exc}",
         ) from exc
 
-    if not _is_higher(landed_version, version_before_merge):
+    if not _is_higher(landed_version, version_the_merge_was_built_on):
         raise PublishFailed(
             _MAY_NOT_HAVE_ARRIVED,
             detail=(
                 f"{plugin.manifest_path} says {landed_version} after merging, which is not higher "
-                f"than {version_before_merge}"
+                f"than the {version_the_merge_was_built_on} the merge was built on"
             ),
         )
 
@@ -563,6 +875,21 @@ def _remove_working_copy(gh: GitHubClient, branch: str) -> bool:
     except Exception:  # noqa: BLE001 - the original failure is the one that matters
         return False
     return True
+
+
+def _withdraw_from_review(gh: GitHubClient, number: int) -> None:
+    """Take a change back out of review when it is not going to be published after all.
+
+    This runs on a path where something has already gone wrong, and the working copy the change
+    was written on is about to be taken away, so leaving the change sitting there would leave a
+    proposal to merge something that no longer exists anywhere. Whatever went wrong first is the
+    thing the person needs to hear about, so a problem while withdrawing is kept quiet rather
+    than raised over the top of it.
+    """
+    try:
+        gh.close_pr(number)
+    except Exception:  # noqa: BLE001 - the original failure is the one that matters
+        return
 
 
 # ==============================================================================================

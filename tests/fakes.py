@@ -33,7 +33,9 @@ are kept here deliberately, because each one is a promise the real client makes:
 
 The shared copy can also be made to move partway through a piece of work, which is how
 a test recreates two people publishing at the same time. See :meth:`after_next` and
-:meth:`move_default_branch`.
+:meth:`move_default_branch`. Reading counts as work here as much as writing does: an answer
+put together from several looks at the library has to describe one moment, and a stand-in
+that could only move the shared copy during a write could never say whether it does.
 """
 
 from __future__ import annotations
@@ -78,6 +80,11 @@ class FakePullRequest:
     body: str
     merged: bool = False
     merge_commit_sha: str = ""
+    closed: bool = False
+    #: The exact saved change that was published when this was merged. Kept because the
+    #: working copy is taken away after a successful publish, so the branch itself is no
+    #: longer there to ask, and a test still has to be able to prove what really went out.
+    merged_head_sha: str = ""
 
 
 @dataclass
@@ -92,6 +99,8 @@ class FakeGitHubClient:
     commits: dict[str, FakeCommit] = field(default_factory=dict)
     branches: dict[str, str] = field(default_factory=dict)
     pull_requests: dict[int, FakePullRequest] = field(default_factory=dict)
+    #: Every change this fake was asked to withdraw from review, in the order it was asked.
+    withdrawn_pull_requests: list[int] = field(default_factory=list)
     calls: list[tuple[str, Any]] = field(default_factory=list)
     merge_attempts: int = 0
 
@@ -207,7 +216,9 @@ class FakeGitHubClient:
                 SkillNotFound,
                 "I could not find the " + branch + " branch in the skills library.",
             )
-        return self.branches[branch]
+        where = self.branches[branch]
+        self._fire("get_ref_sha")
+        return where
 
     def get_file(self, path: str, ref: str) -> tuple[str, str]:
         self.calls.append(("get_file", (path, ref)))
@@ -217,6 +228,11 @@ class FakeGitHubClient:
                 SkillNotFound, "I could not find " + path + " in the skills library."
             )
         text = snapshot[path]
+        # Fired after the answer is settled, so a callback that moves the shared copy changes
+        # what happens next rather than what this call already answered. Reading is where a
+        # publish landing partway through does its quietest damage: an answer stitched together
+        # from two moments is wrong in a way nothing in it ever admits.
+        self._fire("get_file")
         return text, _blob_sha(text)
 
     def list_dir(self, path: str, ref: str) -> list[dict]:
@@ -243,6 +259,7 @@ class FakeGitHubClient:
                     "sha": _blob_sha(snapshot[stored]),
                     "size": len(snapshot[stored].encode("utf-8")),
                 }
+        self._fire("list_dir")
         return list(entries.values())
 
     def create_branch(self, name: str, from_sha: str) -> None:
@@ -419,8 +436,69 @@ class FakeGitHubClient:
         self.branches[pull.base] = merge_sha
         pull.merged = True
         pull.merge_commit_sha = merge_sha
+        pull.merged_head_sha = head_commit.sha
         self._fire("merge_pr")
         return merge_sha
+
+    def close_pr(self, number: int) -> None:
+        """Take a change back out of review, exactly on the terms the real client uses.
+
+        This runs when something has already gone wrong, so a change that is already
+        withdrawn, or that was never there at all, counts as done rather than as a problem
+        of its own: the first failure is the one the person needs to hear about. Anything
+        else is still said out loud, a lost permission most of all, because a blanket
+        silence would leave the library quietly filling with changes waiting for review
+        that nobody ever hears about.
+
+        A change has to be named by its number. ``True`` counts as the number one in Python,
+        so a caller that passed it by mistake would otherwise withdraw whichever change is
+        numbered one, and that one belongs to somebody else.
+        """
+        self.calls.append(("close_pr", number))
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            raise _fake_error(
+                PublishFailed,
+                "I was not told which change to withdraw from review, so I left everything "
+                "as it was.",
+            )
+        pull = self.pull_requests.get(number)
+        if pull is not None:
+            pull.closed = True
+        self.withdrawn_pull_requests.append(number)
+        self._fire("close_pr")
+
+    def commit_parents(self, sha: str) -> list[str]:
+        """What one saved change was built on, in the order it was built on.
+
+        The first one is the copy that was merged into and the rest are the copies that were
+        merged in, so the order carries the meaning and is never sorted or thinned out. A
+        saved change nobody can name is refused rather than answered with nothing, because an
+        answer of nothing reads exactly like a change that was built on nothing at all, which
+        is the very shape a caller is trying to tell apart.
+        """
+        self.calls.append(("commit_parents", sha))
+        if not isinstance(sha, str) or not sha.strip():
+            raise _fake_error(
+                PublishFailed,
+                "I was not told which saved change to look at, so I could not check what it "
+                "was built on.",
+            )
+        wanted = sha.strip()
+        if wanted not in self.commits:
+            raise _fake_error(
+                SkillNotFound, "I could not find that saved change in the skills library."
+            )
+        parents = list(self.commits[wanted].parents)
+        if not parents:
+            # The real client refuses this rather than handing back an empty answer, so this
+            # one does too. A caller asking what a merge carried is asking a question that an
+            # empty answer cannot honestly answer.
+            raise _fake_error(
+                PublishFailed,
+                "GitHub did not tell me what that saved change was built on, so I could not "
+                "check it. Nothing was changed.",
+            )
+        return parents
 
     def list_commits(self, path: str, limit: int) -> list[dict]:
         """History for one file, or for everything inside one folder.

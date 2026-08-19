@@ -1,33 +1,9 @@
 {
   "project": "skill-librarian",
-  "date": "2026-08-18",
-  "updated_at": "2026-08-19T03:57:58Z",
-  "summary": "## Session Summary - 2026-08-18\n\n**Project:** skill-librarian\n**Time:** 15:58:08 - 23:57:47\n**Total Actions:** 540\n\n### Activity Breakdown\n- Edits: 62\n- Writes: 2\n- Reads: 31\n- Commands: 407\n\n### Files Touched (0\n0)\n- ",
+  "date": "2026-08-19",
+  "updated_at": "2026-08-19T04:22:21Z",
+  "summary": "## Session Summary - 2026-08-19\n\n**Project:** skill-librarian\n**Time:** 15:58:08 - 00:22:12\n**Total Actions:** 543\n\n### Activity Breakdown\n- Edits: 62\n- Writes: 2\n- Reads: 31\n- Commands: 408\n\n### Files Touched (0\n0)\n- ",
   "recent_activities": [
-    {
-      "timestamp": "2026-08-19T00:44:17Z",
-      "time_local": "20:44:17",
-      "tool": "Bash",
-      "command": "sed -n 1,120p tests/test_fake_conformance.py; echo \"...\"; sed -n 120,268p tests/test_fake_conformance.py",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "11f67a2a73e93818cd6b0d02401540768a6320add0a2be8a443b90bdcb639c4a"
-    },
-    {
-      "timestamp": "2026-08-19T00:44:58Z",
-      "time_local": "20:44:58",
-      "tool": "Bash",
-      "command": "python3 - <<'PY'\nimport pathlib\np = pathlib.Path(\"tests/test_publisher.py\")\ns = p.read_text()\n\nold_doc = '''    It records everything it is asked to do so a test can prove what did and did not happen....",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "39ff5deba89fa0c5b4f5c6f3031d3b0b2d1cf5f25f726bcc759359934cb0b0b1"
-    },
-    {
-      "timestamp": "2026-08-19T00:45:01Z",
-      "time_local": "20:45:01",
-      "tool": "Bash",
-      "command": "timeout 300 uv run pytest -q 2>&1 | tail -30",
-      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
-      "_prev_hash": "78f220c811bd4bb872a1400f9d0ce5f69007971ab82515ad7b4c7b3812936327"
-    },
     {
       "timestamp": "2026-08-19T00:45:08Z",
       "time_local": "20:45:08",
@@ -403,6 +379,29 @@
       "command": "cd ~/code/skill-librarian\npython3 - <<'PY'\np=\"GOAL.md\"; s=open(p).read()\ns = s.replace('''- [ ] B4: Codex review round ends approved - running''',\n'''- [x] B4: Two Codex review rounds completed, both ...",
       "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
       "_prev_hash": "61a1e8e708ed52591c8d69ae5b0166e1e274973903884d607dcc5527152e8164"
+    },
+    {
+      "timestamp": "2026-08-19T04:21:49Z",
+      "time_local": "00:21:49",
+      "tool": "mcp__multi-llm__get_status",
+      "command": "{\"deep\":false}",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "9f9f92ffca37d65694d22be060d854f82f02aca390abccd271017885ce1cd3d2"
+    },
+    {
+      "timestamp": "2026-08-19T04:21:57Z",
+      "time_local": "00:21:57",
+      "tool": "TaskStop",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "e2021ad2d7474f2a55c977d9e35d6c9502d83175e23a2aaeb0c5f416bc4c074f"
+    },
+    {
+      "timestamp": "2026-08-19T04:22:12Z",
+      "time_local": "00:22:12",
+      "tool": "Bash",
+      "command": "cd /Users/adam/.claude/jobs/36829747/tmp\ncp ~/code/skill-librarian/src/librarian/publisher.py .\nwc -l publisher.py\ncat > review-prompt.txt <<'EOF'\nReview ONLY the file ./publisher.py in this directory...",
+      "session_id": "36829747-896a-4ac9-8766-4cfa0d477b3a",
+      "_prev_hash": "5dc270251ef9831ddafe6e05a0798716bb09b7653bfdfcc7a212cc003e0c587d"
     }
   ]
 }

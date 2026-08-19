@@ -447,9 +447,32 @@ def _sync_wording(cfg: Config, skill_name: str, new_version: str) -> str:
     )
 
 
+def _one_moment_in_time(gh: GitHubClient, cfg: Config) -> str:
+    """Where the shared copy stands right now, asked once and used for the whole answer.
+
+    Every read below could ask for the shared copy by name instead, and each one would be
+    answered from wherever it happened to stand at that instant. A publish landing partway
+    through would then be described half one way and half the other: a skill found in one
+    collection and read from another, a list of skills whose descriptions come from two
+    different moments, or a skill that was there when it was looked up and gone by the time it
+    was read, which reads to the person as "there is no skill called that" about a skill that
+    is plainly there. Asking once and holding the answer means everything said describes one
+    moment, which is the only version of it anybody can act on.
+
+    One thing this cannot pin: asking for the recent changes to a skill takes no starting point,
+    because a repository answers that question about the shared copy as it stands and there is
+    nowhere to say otherwise. So a history still finds the skill at one moment and lists the
+    changes to it at another. The worst of that is a list a few seconds newer than the collection
+    it was looked up in, which is a far smaller thing than reading a skill in halves, but it is
+    not nothing and it is worth saying rather than leaving somebody to assume otherwise.
+    """
+    return gh.get_ref_sha(cfg.default_branch)
+
+
 def list_skills(actor: Actor, gh: GitHubClient, cfg: Config) -> str:
     """Every skill in the library, grouped by the collection it belongs to."""
-    found = list_all_skills(gh, cfg, cfg.default_branch)
+    as_it_stands = _one_moment_in_time(gh, cfg)
+    found = list_all_skills(gh, cfg, as_it_stands)
     if not found:
         return (
             "There are no skills in the library yet. Once one is added it will show up "
@@ -480,7 +503,7 @@ def list_skills(actor: Actor, gh: GitHubClient, cfg: Config) -> str:
         else:
             lines.append("")
         for skill in by_collection[collection]:
-            description = _description_of(gh, skill, cfg.default_branch)
+            description = _description_of(gh, skill, as_it_stands)
             if description:
                 lines.append(f"- {skill.skill_name}: {description}")
             else:
@@ -521,8 +544,9 @@ def _description_of(gh: GitHubClient, skill: SkillRef, ref: str) -> str:
 def read_skill(actor: Actor, gh: GitHubClient, cfg: Config, skill_name: str) -> str:
     """The full current text of one skill, plus any supporting files."""
     name = validate_skill_name(skill_name)
-    found = resolve_skill(gh, cfg, name, cfg.default_branch)
-    text = _read_optional_file(gh, found.skill_path, cfg.default_branch)
+    as_it_stands = _one_moment_in_time(gh, cfg)
+    found = resolve_skill(gh, cfg, name, as_it_stands)
+    text = _read_optional_file(gh, found.skill_path, as_it_stands)
     if text is None:
         raise _error(
             SkillNotFound,
@@ -541,7 +565,7 @@ def read_skill(actor: Actor, gh: GitHubClient, cfg: Config, skill_name: str) -> 
     ]
     supporting = [
         path.rsplit("/", 1)[-1]
-        for path in sorted(_list_skill_files(gh, found.plugin, name, cfg.default_branch))
+        for path in sorted(_list_skill_files(gh, found.plugin, name, as_it_stands))
         if "/reference/" in path
     ]
     if supporting:
@@ -813,7 +837,7 @@ def history(
         limit = 1
     if limit > 50:
         limit = 50
-    plugin = _owning_plugin(gh, cfg, name, cfg.default_branch)
+    plugin = _owning_plugin(gh, cfg, name, _one_moment_in_time(gh, cfg))
     commits = gh.list_commits(skill_dir(plugin.plugin_dir, name), limit)
     if not commits:
         return (
@@ -864,7 +888,7 @@ def revert(
             "lists.",
         )
 
-    plugin = _owning_plugin(gh, cfg, name, cfg.default_branch)
+    plugin = _owning_plugin(gh, cfg, name, _one_moment_in_time(gh, cfg))
     old_files = _list_skill_files(gh, plugin, name, reference)
     if not old_files:
         raise _error(

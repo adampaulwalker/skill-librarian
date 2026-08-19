@@ -1135,7 +1135,208 @@ def test_the_change_overtaken_mid_publish_is_still_merged_only_as_approved(
     assert len(merged) == 1
     assert merged[0].base == "main"
     # The commit that was merged is the last one made on the working copy, not an earlier one.
-    assert gh.branches[merged[0].head] == gh.commits[gh.branches["main"]].parents[-1]
+    # The working copy itself is taken away once the publish has worked, so what was merged is
+    # proved from the record of the merge rather than from a branch that is no longer there.
+    saved_on_the_working_copy = [
+        commit.sha for commit in gh.commit_list() if commit.branch == merged[0].head
+    ]
+    assert saved_on_the_working_copy, "nothing was ever saved on the working copy"
+    assert merged[0].merged_head_sha == saved_on_the_working_copy[-1]
+    assert merged[0].merged_head_sha == gh.commits[gh.branches["main"]].parents[-1]
+    assert merged[0].head not in gh.branches, "the working copy was left behind after publishing"
+
+
+SOMEONE_ELSES_BRIEFS = skill_text(
+    "how-we-write-briefs",
+    "How to write a brief.",
+    "Open with the client name and the date they asked.",
+)
+
+
+def someone_else_publishes_the_same_skill(
+    gh: FakeGitHubClient, version: str, briefs_text: str
+) -> None:
+    """Another person's change lands, and it is to the very skill this change is editing.
+
+    This is the case that destroys work rather than the case that merely gets in the way. The
+    wording that was agreed to is the whole of the file, so putting it on top of theirs replaces
+    what they wrote instead of joining it. Their version move comes with it, exactly as a real
+    publish would, so the change in flight has to work its own number out again and start from
+    where the shared copy now stands.
+    """
+    gh.move_default_branch(
+        {
+            BRIEFS: briefs_text,
+            ALPHA_MANIFEST: plugin_manifest_text("alpha-pack", version),
+            MARKETPLACE_MANIFEST: marketplace_manifest_text(
+                dataclasses.replace(ALPHA, version=version), BETA
+            ),
+        }
+    )
+
+
+def test_a_publish_never_writes_over_someone_elses_wording_for_the_same_skill(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """Two people edit the same skill at once, and neither one's work disappears in silence.
+
+    Somebody else publishes their own wording for this very skill while this change is saving
+    its work, and moves the version number with it, so this change has to start again from where
+    the shared copy now stands. Starting again means writing the agreed wording, which is the
+    whole file, straight over theirs. Nothing would clash and nothing would fail: their words
+    would simply be gone, and the person who took them away would be told the publish worked.
+
+    So it does not happen at all. The publish stops before anything is merged, their wording is
+    still the wording in the shared skills, and the person is told plainly what happened and that
+    asking again will start from the latest copy.
+    """
+    preview = service.propose_edit(
+        A_PERSON, gh, cfg, store, "how-we-write-briefs", {BRIEFS: UPDATED_BRIEFS}, "Because."
+    )
+    gh.after_next(
+        "commit_files",
+        lambda client: someone_else_publishes_the_same_skill(
+            client, "1.4.3", SOMEONE_ELSES_BRIEFS
+        ),
+    )
+
+    with pytest.raises(PublishFailed) as refused:
+        service.approve(A_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    assert gh.hooks_fired == ["commit_files"], "the race never happened, so this proves nothing"
+
+    # The whole point. Their words are still the words everybody reads.
+    assert gh.files_on("main")[BRIEFS] == SOMEONE_ELSES_BRIEFS
+    assert gh.files_on("main")[BRIEFS] != UPDATED_BRIEFS
+
+    # And nothing was merged on the way to finding that out, so there was never a moment where
+    # their wording was off the shared copy.
+    assert gh.merge_attempts == 0
+    assert [pull for pull in gh.pull_requests.values() if pull.merged] == []
+    assert version_of(gh, ALPHA_MANIFEST) == "1.4.3"
+    assert entry_named(gh, "alpha-pack")["version"] == "1.4.3"
+
+    # The refusal comes before this change is ever put up for review, so there is nothing waiting
+    # for anybody. Said as an emptiness rather than as "every one of them is withdrawn", because
+    # that phrasing is quietly true of no changes at all and would prove nothing.
+    assert gh.pull_requests == {}
+    assert gh.withdrawn_pull_requests == []
+    # And no working copy is left behind, so asking again starts from nothing.
+    assert [name for name in gh.branches if name.startswith("librarian/")] == []
+
+    message = refused.value.user_message
+    assert "somebody else changed this skill" in message.lower()
+    assert "nothing has been changed" in message.lower()
+    assert "ask for the change again" in message.lower()
+
+
+def test_a_file_this_change_adds_is_not_written_over_when_somebody_else_added_it_first(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """A file this change creates can be created by somebody else in the very same gap.
+
+    There is nothing to compare it against at the starting point, because it was not there then.
+    That is exactly why it matters: writing it now would replace what they just published rather
+    than add anything, and the whole thing would read as a perfectly clean publish.
+    """
+    theirs = "Keep the tone warm and plain.\n"
+    preview = service.propose_edit(
+        A_PERSON,
+        gh,
+        cfg,
+        store,
+        "how-we-write-briefs",
+        {BRIEFS_NOTES: "The note this change would add.\n"},
+        "Because.",
+    )
+    gh.after_next(
+        "commit_files",
+        lambda client: client.move_default_branch(
+            {
+                BRIEFS_NOTES: theirs,
+                ALPHA_MANIFEST: plugin_manifest_text("alpha-pack", "1.4.3"),
+                MARKETPLACE_MANIFEST: marketplace_manifest_text(
+                    dataclasses.replace(ALPHA, version="1.4.3"), BETA
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(PublishFailed) as refused:
+        service.approve(A_PERSON, gh, cfg, store, preview.proposal_id, preview.diff_hash)
+
+    assert gh.hooks_fired == ["commit_files"], "the race never happened, so this proves nothing"
+    assert gh.files_on("main")[BRIEFS_NOTES] == theirs
+    assert gh.merge_attempts == 0
+    assert "somebody else changed this skill" in refused.value.user_message.lower()
+
+
+# ==============================================================================================
+# One answer describes one moment
+# ==============================================================================================
+
+
+def test_reading_a_skill_describes_one_moment_even_when_a_publish_lands_partway_through(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """Reading a skill takes several looks at the library, and they have to agree with each other.
+
+    Somebody else publishes while this reading is under way. If each look asked for the library
+    by name it would be answered from wherever the library happened to stand at that instant, and
+    the reply would be stitched together from two different moments: the wording from before the
+    publish and the list of supporting notes from after it. Nothing in the reply would say so, and
+    the person would be told about a note that does not go with the wording they were just shown.
+    """
+    a_note = "plugins/alpha-pack/skills/how-we-write-briefs/reference/tone.md"
+    theirs = skill_text(
+        "how-we-write-briefs", "How to write a brief.", "Their newer wording entirely."
+    )
+    gh.after_next(
+        "get_file",
+        lambda client: client.move_default_branch({BRIEFS: theirs, a_note: "Keep it warm.\n"}),
+    )
+
+    answer = service.read_skill(A_PERSON, gh, cfg, "how-we-write-briefs")
+
+    assert gh.hooks_fired == ["get_file"], "the publish never landed, so this proves nothing"
+
+    # Their publish really is on the shared copy, so there were two moments to choose between.
+    assert gh.files_on("main")[BRIEFS] == theirs
+    assert a_note in gh.files_on("main")
+
+    # And the answer is entirely one of them: the wording from before their publish, and no
+    # mention of the note that only exists after it.
+    assert "Their newer wording entirely." not in answer
+    assert "tone" not in answer
+    assert "supporting notes" not in answer
+
+
+def test_listing_skills_describes_one_moment_even_when_a_publish_lands_partway_through(
+    gh: FakeGitHubClient, cfg: Config, store: ProposalStore
+) -> None:
+    """The list and the descriptions in it come from the same moment, or they disagree.
+
+    Somebody else changes a description while the list is being put together. Asking for the
+    library by name for each description would answer some of them from before their publish and
+    some from after it, and the list would quietly describe a library that never existed.
+    """
+    gh.after_next(
+        "list_dir",
+        lambda client: client.move_default_branch(
+            {BRIEFS: skill_text("how-we-write-briefs", "A description they published instead.")}
+        ),
+    )
+
+    answer = service.list_skills(A_PERSON, gh, cfg)
+
+    assert gh.hooks_fired == ["list_dir"], "the publish never landed, so this proves nothing"
+
+    # Their change really is on the shared copy, so there were two moments to choose between.
+    assert "A description they published instead." in gh.files_on("main")[BRIEFS]
+
+    # And the list describes one of them throughout.
+    assert "A description they published instead." not in answer
+    assert "How to write a brief." in answer
 
 
 def test_a_third_publish_landing_between_review_and_merge_cannot_ship_a_used_version(

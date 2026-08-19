@@ -110,6 +110,16 @@ _MSG_NO_DELETING_SHARED = (
 _MSG_NO_BRANCH_NAMED = (
     "I was not told which working copy to take away, so I left everything as it was."
 )
+_MSG_NO_REVIEW_NAMED = (
+    "I was not told which change to withdraw from review, so I left everything as it was."
+)
+_MSG_NO_COMMIT_NAMED = (
+    "I was not told which saved change to look at, so I could not check what it was built on."
+)
+_MSG_UNREADABLE_COMMIT = (
+    "GitHub did not tell me what that saved change was built on, so I could not check it. "
+    "Nothing was changed."
+)
 
 
 def _error(
@@ -158,7 +168,21 @@ class GitHubClient(Protocol):
     # if the branch no longer points at it, so that only approved content is published.
     def merge_pr(self, number: int, commit_title: str, expected_head_sha: str) -> str: ...
 
+    # Withdrawing a change that was put forward for review and is not going to be published.
+    # A publish that falls over after the change is up for review takes its working copy away,
+    # and a change still sitting there afterwards points at a working copy that no longer
+    # exists. At best that is confusing; if taking the working copy away also failed, it is a
+    # live proposal to merge something nobody meant to leave behind. Like taking a working copy
+    # away, this runs when something has already gone wrong, so a change that is already
+    # withdrawn or already gone counts as done rather than as a problem of its own.
+    def close_pr(self, number: int) -> None: ...
+
     def list_commits(self, path: str, limit: int) -> list[dict]: ...
+
+    # What a saved change was built on. The first one is the copy that was merged into and the
+    # rest are the copies that were merged in, so this is how a merge can be checked for what it
+    # actually carried rather than for what it was meant to carry.
+    def commit_parents(self, sha: str) -> list[str]: ...
 
 
 def _now() -> float:
@@ -245,6 +269,28 @@ def _branch_already_gone(response: httpx.Response) -> bool:
     except Exception:  # pragma: no cover - a body that cannot be decoded
         return False
     return "does not exist" in body or "not found" in body
+
+
+def _pull_request_already_withdrawn(response: httpx.Response) -> bool:
+    """True when a request to withdraw a change found there was nothing left to withdraw.
+
+    GitHub answers a change it really did withdraw, and one that was already withdrawn, with the
+    change itself. It answers one that is not there at all by saying it could not be found, and
+    it can also refuse the request as one it cannot accept while saying the same thing. Both of
+    those mean the job is done. Anything else is a real problem and is reported as one, so a lost
+    permission is never mistaken for a tidy library. The wording is only read on the two answers
+    that can mean this, so a library that happens to be unwell and says something similar while
+    failing is still reported as failing.
+    """
+    if response.status_code == 404:
+        return True
+    if response.status_code != 422:
+        return False
+    try:
+        body = response.text.lower()
+    except Exception:  # pragma: no cover - a body that cannot be decoded
+        return False
+    return "does not exist" in body or "not found" in body or "already closed" in body
 
 
 class _RestClient:
@@ -519,6 +565,46 @@ class _RestClient:
             )
         return history
 
+    def commit_parents(self, sha: str) -> list[str]:
+        """What one saved change was built on top of.
+
+        The first one is the copy that was merged into, and the rest are the copies that were
+        merged in. That order is what makes the answer useful, so it is passed straight through
+        rather than tidied, sorted or thinned out.
+
+        Nothing is guessed here. Asking about a saved change that cannot be named would ask
+        GitHub for the whole list of changes instead, and a list read as a saved change looks
+        exactly like one that was built on nothing at all. That is the shape of answer this is
+        meant to catch, so it is refused rather than turned into an empty answer.
+        """
+        wanted = sha.strip() if isinstance(sha, str) else ""
+        if not wanted or any(char in wanted for char in "/\\?#% \t\r\n"):
+            raise _error(LibrarianError, _MSG_NO_COMMIT_NAMED)
+
+        response = self._request(
+            "GET",
+            self._repo_url(f"/commits/{wanted}"),
+            missing_message="I could not find that saved change in the skills library.",
+        )
+        payload = self._json(response)
+        if not isinstance(payload, dict):
+            raise _error(LibrarianError, _MSG_UNREADABLE_COMMIT)
+        parents = payload.get("parents")
+        if not isinstance(parents, list) or not parents:
+            # An answer that records nothing at all is refused rather than handed back as an
+            # empty one. A caller asking what a merge carried is asking a question an empty
+            # answer cannot honestly answer, and an empty answer is exactly what a wrongly
+            # shaped reply looks like once it has been flattened.
+            raise _error(LibrarianError, _MSG_UNREADABLE_COMMIT)
+
+        found: list[str] = []
+        for parent in parents:
+            value = parent.get("sha") if isinstance(parent, dict) else None
+            if not isinstance(value, str) or not value.strip():
+                raise _error(LibrarianError, _MSG_UNREADABLE_COMMIT)
+            found.append(value.strip())
+        return found
+
     # -- writing --------------------------------------------------------------
 
     @staticmethod
@@ -743,6 +829,43 @@ class _RestClient:
                 "Someone who manages the library should check it.",
             )
         return sha
+
+    def close_pr(self, number: int) -> None:
+        """Withdraw a change that was put forward for review and is not going to be published.
+
+        A publish that falls over after the change is up for review takes its working copy away.
+        A change still sitting there afterwards points at a working copy that is no longer there,
+        which reads at best as something half finished, and if taking the working copy away also
+        failed it is a live proposal to merge something nobody meant to leave behind.
+
+        Two things make this safe to call from a failure path.
+
+        A change that is already withdrawn, or that is not there at all, counts as done rather
+        than as a problem. This runs when something else has already gone wrong, and that first
+        failure is what the person needs to hear about, not the tidying up afterwards.
+
+        Anything else is still said out loud. A lost permission most of all: swallowing that
+        would leave the library quietly filling with changes waiting for review that nobody ever
+        hears about.
+        """
+        # A change has to be named by its number. Anything else would address some other part of
+        # the library entirely, so nothing is sent at all.
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            raise _error(PublishFailed, _MSG_NO_REVIEW_NAMED)
+
+        headers = self._base_headers()
+        headers["Authorization"] = self._auth_header()
+        response = self._send(
+            "PATCH",
+            self._repo_url(f"/pulls/{number}"),
+            headers=headers,
+            json_body={"state": "closed"},
+            writing=True,
+        )
+        if _pull_request_already_withdrawn(response):
+            _LOG.debug("Change %s was already withdrawn from review", number)
+            return
+        self._raise_for_status(response, writing=True)
 
     # -- housekeeping ---------------------------------------------------------
 
