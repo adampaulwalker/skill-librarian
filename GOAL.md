@@ -55,7 +55,7 @@ The librarian collapses those seven steps into: describe the change in chat, app
       running in its place, and this is NOT a Codex sign-off.
 - [x] B5: Proven end to end against the live testbed repository: list, ambiguity refusal, propose,
       bad-fingerprint refusal, anonymous-publish refusal, publish, history, revert
-- [ ] B6: Deployment path and setup instructions for a new team
+- [x] B6: Deployment path and setup instructions for a new team - README.md
 - [x] B7: Committed and pushed - github.com/adampaulwalker/skill-librarian (private)
 
 ## Completion criteria
@@ -115,6 +115,17 @@ Against `adampaulwalker/skill-librarian-testbed`, a real private repository hold
 | Rebuild on a moved head keeps attribution honest | Competitor takes 1.4.3 and touches another file. This publish rebuilds and goes out at 1.4.4. Every commit it makes carries only the skill and the two manifests, never the other person's file. |
 | Partial failure never half-publishes | Injected failure at create branch, commit, open pull request, and merge. Every one fails closed: no orphaned branches, shared copy untouched, plain-English message. |
 | The generality tripwire actually fires | Planted a customer name in a test file, watched it fail, removed it, watched it pass. |
+
+## Round log, review rounds
+
+| Round | Verdict | What it found | State |
+|---|---|---|---|
+| 1 | CRITICAL | Concurrent publishes could each compute the same next version, so the second shipped content under a number already delivered. Merge was not pinned. The client could write to the default branch. Anyone could approve another person's proposal while the history kept the original name. | closed, proven |
+| 2 | CRITICAL | The version guard read the right value and merged anyway, checking only afterwards. Three test doubles had silently stopped damaging anything, so their tests passed while proving nothing. | closed, proven |
+| 3 | CRITICAL | A lost update. A rebuild committed frozen approved wording onto a moved head without checking the file had changed underneath, so a concurrent edit to the same skill was destroyed and the publish reported success. Five more of the same shape found while fixing it. | closed, proven |
+
+The recurring bug class, all three times: read something that moves, then act as though the earlier
+reading still holds.
 
 ## Still open
 
